@@ -1,0 +1,28 @@
+# Web
+fastapi==0.115.4
+uvicorn[standard]==0.30.6
+
+# HTTP / cliente
+httpx==0.27.2             # compatible con supabase 2.5.x
+python-multipart==0.0.9   # subir ficheros
+aiofiles==24.1.0
+
+# Config / utilidades
+python-dotenv==1.0.1
+loguru==0.7.2
+
+# Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.2              # <- fija versión compatible y evita warning/errores
+
+# DB
+psycopg2-binary==2.9.9
+supabase==2.5.0            # requiere httpx<0.28
+
+# Tipado / validación
+pydantic==2.9.2
+pydantic-settings==2.7.0
+
+# Crypto
+cryptography==43.0.3

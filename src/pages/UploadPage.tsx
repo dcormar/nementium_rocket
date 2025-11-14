@@ -1,16 +1,21 @@
 import React, { useRef, useState, useEffect } from "react";
+import { UPLOAD_DELAY_MS } from "../config";
+import { sleep } from "../utils/sleep"; // o define el helper en el mismo archivo
 
 type Props = { token: string | null };
 type DocType = "factura" | "venta";
 
-/** Ahora refleja el shape de /uploads/historico */
+/** /api/uploads/historico */
+type UploadStatus = "UPLOADED" | "PROCESSING" | "PROCESSED" | "FAILED" | "DUPLICATED";
 type Operacion = {
   id: string;
-  fecha: string;                  // ISO (timestamptz)
+  fecha: string;
   tipo: "FACTURA" | "VENTA";
+  original_filename: string;
   descripcion: string;
-  tam_bytes?: number | null;      // puede venir null
+  tam_bytes?: number | null;
   storage_path?: string | null;
+  status?: UploadStatus | null;
 };
 
 const ALLOWED_TYPES = [
@@ -20,98 +25,180 @@ const ALLOWED_TYPES = [
 
 export default function UploadPage({ token }: Props) {
   const [docType, setDocType] = useState<DocType | null>(null);
-  const [file, setFile] = useState<File | null>(null);
+
+  // 🔄 multi-archivo
+  const [files, setFiles] = useState<File[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [showSuccess, setShowSuccess] = useState(false)
+  const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
 
-  // ====== HISTÓRICO (ahora de uploads) ======
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [showSuccess, setShowSuccess] = useState(false);
+
+  console.log("⏱️ Delay entre subidas configurado:", UPLOAD_DELAY_MS, "ms");
+
+  // ====== HISTÓRICO (uploads) ======
   const [ops, setOps] = useState<Operacion[]>([]);
   const [opsError, setOpsError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadHistorico = () => {
     fetch("http://localhost:8000/api/uploads/historico?limit=20", {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     })
       .then(r => (r.ok ? r.json() : Promise.reject("Error cargando histórico")))
-      .then(data => setOps(data.items || []))
+      .then(data => {
+        console.debug("Respuesta /api/uploads/historico:", data);
+        setOps(data.items || []);
+      })
       .catch(e => setOpsError(typeof e === "string" ? e : "Error desconocido"));
-  }, [token]);
-  // ==========================================
+  };
 
-  const onFile = (f: File | null) => {
-    if (!f) return;
+  useEffect(() => {
+    loadHistorico();
+  }, [token]);
+  // ==================================
+
+  // Helpers multi-archivo
+  const isAllowed = (f: File) => {
     const name = f.name.toLowerCase();
-    if (
-      !ALLOWED_TYPES.includes(f.type) &&
-      !name.endsWith(".xlsx") &&
-      !name.endsWith(".pdf")
-    ) {
-      alert("Solo se admiten PDF o XLSX");
-      return;
+    return (
+      ALLOWED_TYPES.includes(f.type) ||
+      name.endsWith(".pdf") ||
+      name.endsWith(".xlsx")
+    );
+  };
+
+  const addFiles = (list: FileList | File[]) => {
+    const incoming = Array.from(list);
+    const valid = incoming.filter(isAllowed);
+    if (valid.length !== incoming.length) {
+      alert("Algunos archivos fueron ignorados (solo PDF o XLSX).");
     }
-    setFile(f);
+    // dedupe por nombre+tamaño
+    const dedup = [...files];
+    for (const f of valid) {
+      const exists = dedup.some(d => d.name === f.name && d.size === f.size);
+      if (!exists) dedup.push(f);
+    }
+    setFiles(dedup);
+  };
+
+  const removeFile = (name: string, size: number) => {
+    setFiles(prev => prev.filter(f => !(f.name === name && f.size === size)));
+  };
+
+  const clearFiles = () => setFiles([]);
+
+  // Eventos
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) addFiles(e.target.files);
+    // permite volver a seleccionar el mismo archivo si se borra
+    e.target.value = "";
   };
 
   const handleDrop: React.DragEventHandler<HTMLDivElement> = (e) => {
     e.preventDefault();
     e.stopPropagation();
     setDragOver(false);
-    onFile(e.dataTransfer.files?.[0] ?? null);
+    if (e.dataTransfer.files?.length) addFiles(e.dataTransfer.files);
   };
 
   const startUpload = () => {
     if (!token) return alert("Sesión caducada. Inicia sesión de nuevo.");
-    if (!file) return alert("Selecciona un PDF o XLSX");
     if (!docType) return alert("Selecciona si es Factura o Venta");
+    if (files.length === 0) return alert("Selecciona al menos un archivo");
     setShowConfirm(true);
   };
 
   const confirmUpload = async () => {
-    if (!file || !token || !docType) return;
+    if (!token || !docType || files.length === 0) return;
     setUploading(true);
+    setUploadingIndex(0);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("tipo", docType); // FastAPI espera 'tipo'
-
-      const res = await fetch("/api/upload/", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
-      });
-      if (!res.ok) throw new Error(await res.text());
-
+      // Secuencial
+      for (let i = 0; i < files.length; i++) {
+        setUploadingIndex(i);
+        const fd = new FormData();
+        fd.append("file", files[i]);
+        fd.append("tipo", docType);
+        const res = await fetch("/api/upload/", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: fd,
+        });
+        if (!res.ok) {
+          const t = await res.text();
+          console.error(`Fallo subiendo ${files[i].name}:`, t);
+          alert(`Fallo subiendo ${files[i].name}: ${t}`);
+          // si prefieres continuar con el resto, no hagas return
+          // y sigue el bucle. Aquí continúo:
+          continue;
+        }
+        // refrescamos histórico tras cada subida (o al final si prefieres)
+        loadHistorico();
+        // ⏳ espera entre peticiones según config externa
+        if (UPLOAD_DELAY_MS > 0) {
+          await sleep(UPLOAD_DELAY_MS);
+        }
+      }
       setShowConfirm(false);
-      setFile(null);
+      clearFiles();
       setShowSuccess(true);
-
-      // refrescar histórico de uploads tras una subida exitosa
-      fetch("http://localhost:8000/api/uploads/historico?limit=20", {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      })
-        .then(r => (r.ok ? r.json() : Promise.reject("Error cargando histórico")))
-        .then(data => setOps(data.items || []))
-        .catch(() => {});
     } catch (err: any) {
-      alert("Error subiendo el archivo: " + (err?.message ?? String(err)));
+      alert("Error subiendo archivos: " + (err?.message ?? String(err)));
     } finally {
       setUploading(false);
+      setUploadingIndex(null);
     }
   };
 
-  // ← control de deshabilitado de la dropzone (muestra siempre, pero sin interacción)
+  // Reintento webhook n8n cuando status === 'FAILED'
+  const retryWebhook = async (op: Operacion) => {
+    if (!token) return alert("Sesión caducada");
+    setRetryingId(op.id);
+
+    console.info("🔁 Reintentando webhook para:", op);
+
+    try {
+      const body = { tipo: op.tipo === "FACTURA" ? "factura" : "venta" };
+      const r = await fetch(`/api/upload/${op.id}/retry`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+
+      console.info("📡 Respuesta backend (status):", r.status);
+
+      if (!r.ok) {
+        const errText = await r.text();
+        console.error("❌ Error en retryWebhook:", errText);
+        throw new Error(errText);
+      }
+
+      const data = await r.json();
+      console.info("✅ Respuesta JSON backend:", data);
+
+      await loadHistorico();
+    } catch (e: any) {
+      console.error("⚠️ No se pudo reintentar:", e);
+      alert("No se pudo reintentar: " + (e?.message ?? String(e)));
+    } finally {
+      setRetryingId(null);
+      console.info("🔚 Finalizó retryWebhook para:", op.id);
+    }
+  };
+
   const disabled = !docType;
 
   return (
     <div className="max-w-3xl mx-auto">
       <div className="rounded-2xl shadow-soft bg-white/80 backdrop-blur p-6 border border-gray-100">
-        <h1
-          className="text-2xl font-semibold text-center text-gray-900"
-          style={{ marginBottom: 32 }}
-          >
+        <h1 className="text-2xl font-semibold text-center text-gray-900" style={{ marginBottom: 32 }}>
           Subir factura o fichero de ventas
         </h1>
 
@@ -119,10 +206,7 @@ export default function UploadPage({ token }: Props) {
         <div className="text-center mb-3 text-sm text-gray-600">
           Selecciona el tipo de fichero a subir
         </div>
-        <div
-          className="flex items-center justify-center gap-4 mb-6"
-          style={{ marginBottom: 8 }}   // reduce el espacio antes del dropzone
-        >
+        <div className="flex items-center justify-center gap-4 mb-6" style={{ marginBottom: 8 }}>
           <button
             type="button"
             className={`seg-option ${docType === "factura" ? "seg-selected" : ""}`}
@@ -141,16 +225,17 @@ export default function UploadPage({ token }: Props) {
           </button>
         </div>
 
-        {/* input oculto (siempre) */}
+        {/* input oculto (multiple) */}
         <input
           ref={inputRef}
           type="file"
+          multiple
           accept=".pdf,.xlsx,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           style={{ display: "none" }}
-          onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+          onChange={handleInputChange}
         />
 
-        {/* Dropzone SIEMPRE visible; deshabilitada si no se ha elegido tipo */}
+        {/* Dropzone */}
         <div
           onDragOver={(e) => {
             if (disabled) return;
@@ -171,30 +256,28 @@ export default function UploadPage({ token }: Props) {
           }}
           style={{
             maxWidth: 720,
-            margin: "12px auto 32px",
+            margin: "12px auto 16px",
             background: "#fff",
             border: `2px dashed ${dragOver && !disabled ? "#1d4ed8" : "#cbd5e1"}`,
             borderRadius: 12,
-            minHeight: 420,
-            padding: 40,
+            minHeight: 260,
+            padding: 24,
             textAlign: "center" as const,
             cursor: disabled ? "not-allowed" : "pointer",
             opacity: disabled ? 0.5 : 1,
             filter: disabled ? "grayscale(0.1)" : "none",
             boxShadow: dragOver && !disabled ? "0 6px 20px rgba(29,78,216,.15)" : "none",
-            transition:
-              "border-color 120ms ease, box-shadow 120ms ease, opacity 120ms ease",
+            transition: "border-color 120ms ease, box-shadow 120ms ease, opacity 120ms ease",
             position: "relative",
           }}
         >
-          {/* Overlay informativo cuando está deshabilitado */}
           {disabled && (
             <div
               style={{
-                color: "#1f2937",                 // gris más oscuro
-                fontWeight: 700,                  // más grueso
+                color: "#1f2937",
+                fontWeight: 700,
                 fontSize: "1rem",
-                background: "rgba(255,255,255,0.85)", // resalta sobre el fondo
+                background: "rgba(255,255,255,0.85)",
                 padding: "12px 16px",
                 borderRadius: 8,
                 textAlign: "center",
@@ -206,82 +289,103 @@ export default function UploadPage({ token }: Props) {
           )}
 
           <p style={{ fontWeight: 600, color: "#111827", margin: "4px 0 6px" }}>
-            Arrastra y suelta un archivo aquí
+            Arrastra y suelta archivos aquí
           </p>
           <p style={{ color: "#6b7280", fontSize: "0.95rem", margin: 0 }}>
-            o haz clic para seleccionar un PDF o XLSX
+            o haz clic para seleccionar PDF o XLSX (múltiples)
           </p>
 
-          {file && (
-            <div
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "6px 10px",
-                borderRadius: 999,
-                background: "#eff6ff",
-                color: "#1e40af",
-                border: "1px solid #bfdbfe",
-                fontSize: ".9rem",
-                marginTop: 14,
-              }}
-            >
-              <span
-                className="font-medium"
-                title={file.name}
-                style={{
-                  maxWidth: 240,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {file.name}
-              </span>
-              <span style={{ opacity: 0.7 }}>
-                {Math.round(file.size / 1024)} KB
-              </span>
+          {/* Lista de archivos seleccionados */}
+          {files.length > 0 && (
+            <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+              {files.map((f) => (
+                <div
+                  key={f.name + f.size}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "6px 10px",
+                    borderRadius: 999,
+                    background: "#eff6ff",
+                    color: "#1e40af",
+                    border: "1px solid #bfdbfe",
+                    fontSize: ".9rem",
+                  }}
+                  title={f.name}
+                >
+                  <span
+                    className="font-medium"
+                    style={{
+                      maxWidth: 220,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {f.name}
+                  </span>
+                  <span style={{ opacity: 0.7 }}>
+                    {(f.size / 1024).toFixed(0)} KB
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeFile(f.name, f.size);
+                    }}
+                    aria-label="Quitar archivo"
+                    title="Quitar archivo"
+                    style={{
+                      background: "transparent",
+                      border: 0,
+                      fontSize: 16,
+                      cursor: "pointer",
+                      color: "inherit",
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Botón limpiar selección */}
+          {files.length > 0 && (
+            <div style={{ marginTop: 12 }}>
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (disabled) return;
-                  setFile(null);
+                  clearFiles();
                 }}
-                aria-label="Quitar archivo"
-                title="Quitar archivo"
-                style={{
-                  background: "transparent",
-                  border: 0,
-                  fontSize: 16,
-                  cursor: disabled ? "not-allowed" : "pointer",
-                  color: "inherit",
-                }}
+                className="px-3 py-1 rounded-lg border"
+                title="Vaciar selección"
               >
-                ×
+                Limpiar selección
               </button>
             </div>
           )}
         </div>
 
-        {/* CTA Subir: solo si hay archivo y tipo seleccionado */}
-        <div className="flex justify-center mt-6" style={{ minHeight: 60 }}>
-          {file && !disabled && (
+        {/* CTA Subir */}
+        <div className="flex justify-center mt-4" style={{ minHeight: 60 }}>
+          {files.length > 0 && !disabled && (
             <button
               onClick={startUpload}
               disabled={uploading}
-              className={`seg-option ${
-                uploading ? "opacity-50 cursor-not-allowed" : "seg-selected"
-              }`}
+              className={`seg-option ${uploading ? "opacity-50 cursor-not-allowed" : "seg-selected"}`}
               style={{ opacity: uploading ? 0.6 : 1 }}
             >
-              {uploading ? "Subiendo…" : "Subir"}
+              {uploading
+                ? `Subiendo… ${uploadingIndex !== null ? `${uploadingIndex + 1}/${files.length}` : ""}`
+                : `Subir ${files.length} archivo${files.length > 1 ? "s" : ""}`}
             </button>
           )}
         </div>
       </div>
-      
+
       {/* Modal confirmación */}
       {showConfirm && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
@@ -290,9 +394,14 @@ export default function UploadPage({ token }: Props) {
               Confirmar subida
             </h2>
             <p className="text-sm text-gray-700">
-              Vas a subir <strong>{file?.name}</strong> como{" "}
+              Vas a subir <strong>{files.length}</strong> archivo{files.length > 1 ? "s" : ""} como{" "}
               <strong>{docType}</strong>. ¿Confirmas?
             </p>
+            {/* Muestra hasta 5 nombres */}
+            <ul className="text-xs text-gray-600 mt-2 max-h-28 overflow-auto">
+              {files.slice(0, 5).map(f => <li key={f.name + f.size}>• {f.name}</li>)}
+              {files.length > 5 && <li>… y {files.length - 5} más</li>}
+            </ul>
             <div className="mt-6 flex justify-end gap-4">
               <button
                 className="modal-btn modal-btn-cancel"
@@ -314,15 +423,16 @@ export default function UploadPage({ token }: Props) {
           </div>
         </div>
       )}
+
       {/* Modal de éxito */}
       {showSuccess && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl border border-gray-100 text-center">
             <h2 className="text-lg font-semibold text-gray-900 mb-3">
-              ✅ Archivo subido correctamente
+              ✅ Archivo{files.length > 1 ? "s" : ""} subido{files.length > 1 ? "s" : ""} correctamente
             </h2>
             <p className="text-gray-700 text-sm mb-6">
-              Tu archivo se ha guardado y será procesado en breve.
+              Tus archivos se han guardado y serán procesados en breve.
             </p>
             <button
               onClick={() => setShowSuccess(false)}
@@ -333,6 +443,7 @@ export default function UploadPage({ token }: Props) {
           </div>
         </div>
       )}
+
       {/* ========= Histórico de ficheros subidos ========= */}
       <section
         style={{
@@ -360,8 +471,10 @@ export default function UploadPage({ token }: Props) {
               <tr style={{ background: "#f6f8fa", color: "#163a63" }}>
                 <th style={{ ...th, textAlign: "center" }}>Fecha</th>
                 <th style={{ ...th, textAlign: "center" }}>Tipo</th>
+                <th style={{ ...th, textAlign: "center" }}>Nombre Fichero</th>
                 <th style={{ ...th, textAlign: "center" }}>Descripción</th>
                 <th style={{ ...th, textAlign: "right" }}>Tamaño (KB)</th>
+                <th style={{ ...th, textAlign: "center" }}>Acciones</th>
               </tr>
             </thead>
             <tbody>
@@ -384,6 +497,7 @@ export default function UploadPage({ token }: Props) {
                       {op.tipo}
                     </span>
                   </td>
+                  <td style={td}>{op.original_filename}</td>
                   <td style={td}>{op.descripcion}</td>
                   <td
                     style={{
@@ -394,14 +508,29 @@ export default function UploadPage({ token }: Props) {
                   >
                     {op.tam_bytes != null ? (op.tam_bytes / 1024).toFixed(0) : "-"}
                   </td>
+                  <td style={{ ...td, textAlign: "center" }}>
+                    {op.status === "FAILED" ? (
+                      <button
+                        onClick={() => retryWebhook(op)}
+                        disabled={retryingId === op.id}
+                        className="px-3 py-1 rounded-lg text-white"
+                        style={{
+                          backgroundColor: retryingId === op.id ? "#94a3b8" : "#1d4ed8",
+                          cursor: retryingId === op.id ? "not-allowed" : "pointer",
+                        }}
+                        title="Reintentar envío al procesador"
+                      >
+                        {retryingId === op.id ? "Reintentando…" : "Reintentar"}
+                      </button>
+                    ) : (
+                      <span style={{ color: "#94a3b8" }}>—</span>
+                    )}
+                  </td>
                 </tr>
               ))}
               {ops.length === 0 && !opsError && (
                 <tr>
-                  <td
-                    colSpan={4}
-                    style={{ ...td, textAlign: "center", color: "#667085" }}
-                  >
+                  <td colSpan={5} style={{ ...td, textAlign: "center", color: "#667085" }}>
                     Sin subidas recientes.
                   </td>
                 </tr>
@@ -410,12 +539,11 @@ export default function UploadPage({ token }: Props) {
           </table>
         </div>
       </section>
-      {/* =============================================== */}
     </div>
   );
 }
 
-/* estilos tabla histórico (mismos que dashboard) */
+/* estilos tabla histórico */
 const th: React.CSSProperties = {
   padding: "10px 12px",
   fontWeight: 700,

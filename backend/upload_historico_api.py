@@ -13,6 +13,8 @@ class UploadItem(BaseModel):
     descripcion: str
     tam_bytes: Optional[int]
     storage_path: Optional[str]
+    status: Optional[str] = None
+    original_filename: str
 
 class UploadsResponse(BaseModel):
     items: List[UploadItem]
@@ -38,9 +40,13 @@ async def uploads_historico(limit: int = 20, tz: str = "Europe/Madrid"):
         resp = await client.post(rpc_url, headers=headers, json=payload)
 
     if resp.status_code != 200:
+        logger.error("📛 RPC uploads_historico falló %s: %s", resp.status_code, resp.text)
         raise HTTPException(status_code=502, detail=resp.text)
 
     rows = resp.json() or []
+    logger.info("📦 RPC uploads_historico devolvió %d filas", len(rows))
+    if rows:
+        logger.debug("🔍 Primera fila: %s", rows[0])
     return {
         "items": [
             {
@@ -50,6 +56,8 @@ async def uploads_historico(limit: int = 20, tz: str = "Europe/Madrid"):
                 "descripcion": r["descripcion"] or "Pending Processing",
                 "tam_bytes": r.get("tam_bytes"),
                 "storage_path": r.get("storage_path"),
+                "status": r.get("status"),
+                "original_filename":r.get("original_filename"),
             }
             for r in rows
         ]
