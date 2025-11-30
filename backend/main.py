@@ -1,4 +1,4 @@
-import logging, os
+import logging, os, httpx, asyncio
 from dotenv import load_dotenv
 
 # Carga .env en variables de entorno
@@ -13,6 +13,8 @@ from dashboard_api import router as dashboard_router
 from modelos_api import router as modelos_router
 from upload_api import router as upload_router
 from upload_historico_api import router as upload_historico_router
+from contextlib import asynccontextmanager
+
 
 
 
@@ -31,7 +33,47 @@ for logger_name in ("httpx", "uvicorn", "uvicorn.error", "uvicorn.access"):
     logging.getLogger(logger_name).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+# ----------------------------------------
+# Lifespan: se ejecuta antes de montar la app
+# ----------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger = logging.getLogger(__name__)
+
+    # Leer variables
+    supabase_url = (os.getenv("SUPABASE_URL") or "").strip()
+    supabase_key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+
+    if not supabase_url or not supabase_key:
+        logger.error("Faltan variables SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY en el entorno.")
+        raise RuntimeError("SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY no configuradas.")
+
+    # URL genérica de salud del servicio REST de Supabase
+    health_url = f"{supabase_url.rstrip('/')}/rest/v1/"
+
+    logger.info(f"Verificando conexión con Supabase en: {health_url}")
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(health_url, headers={"apikey": supabase_key})
+
+        if resp.status_code not in (200, 401, 404):
+            raise RuntimeError(
+                f"Supabase respondió con un código inesperado al arrancar: {resp.status_code}"
+            )
+
+        logger.info("Conexión con Supabase verificada correctamente.")
+
+    except httpx.RequestError as e:
+        logger.error(f"No se pudo conectar con Supabase: {e}")
+        raise RuntimeError("Error de red al conectar con Supabase") from e
+
+    # Continue app startup
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
 
 app.add_middleware(
     CORSMiddleware,

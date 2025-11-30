@@ -14,8 +14,11 @@ class Factura(BaseModel):
     id: Optional[int]
     fecha: str
     proveedor: str
-    total: float
-    # ...otros campos relevantes
+    #total: Optional[float] = None
+    importe_sin_iva_euro: float
+    importe_total_euro: float
+    pais_origen: str
+    ubicacion_factura: str
 
 @router.get("/", response_model=List[Factura])
 async def get_facturas(
@@ -26,9 +29,9 @@ async def get_facturas(
     url = f"{SUPABASE_URL}/rest/v1/facturas"
     params = []
     if desde:
-        params.append(f"fecha=gte.{desde}")
+        params.append(f"fecha_dt=gte.{desde}")
     if hasta:
-        params.append(f"fecha=lte.{hasta}")
+        params.append(f"fecha_dt=lte.{hasta}")
     if params:
         url += '?' + '&'.join(params)
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
