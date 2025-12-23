@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { fetchWithAuth } from '../utils/fetchWithAuth'
 
 type MesResumen = {
   anio: number
@@ -16,7 +17,7 @@ type Operacion = {
   importe_eur: number
 }
 
-export default function DashboardPage({ token }: { token: string }) {
+export default function DashboardPage({ token, onLogout }: { token: string; onLogout?: () => void }) {
   const [resumen, setResumen] = useState<MesResumen[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -26,25 +27,27 @@ export default function DashboardPage({ token }: { token: string }) {
   const [opsError, setOpsError] = useState<string | null>(null)
 
   useEffect(() => {
-    fetch('http://localhost:8000/dashboard/', {
-      headers: { Authorization: `Bearer ${token}` }
+    fetchWithAuth('http://localhost:8000/dashboard/', {
+      token,
+      onLogout,
     })
       .then(r => (r.ok ? r.json() : Promise.reject('Error cargando dashboard')))
       .then(data => setResumen(data.ultimos_seis_meses || []))
       .catch(e => setError(typeof e === 'string' ? e : 'Error desconocido'))
       .finally(() => setLoading(false))
-  }, [token])
+  }, [token, onLogout])
 
   // 🟢 nuevo: cargar histórico (independiente del dashboard)
   useEffect(() => {
-    fetch('http://localhost:8000/dashboard/historico?limit=10', {
+    fetchWithAuth('http://localhost:8000/dashboard/historico?limit=10', {
       //cambiar limite a 60 dias en prod
-      headers: { Authorization: `Bearer ${token}` }
+      token,
+      onLogout,
     })
       .then(r => (r.ok ? r.json() : Promise.reject('Error cargando histórico')))
       .then(data => setOps(data.items || []))
       .catch(e => setOpsError(typeof e === 'string' ? e : 'Error desconocido'))
-  }, [token])
+  }, [token, onLogout])
 
   function pad(n: number) {
     return n < 10 ? `0${n}` : n

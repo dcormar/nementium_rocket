@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { fetchWithAuth } from '../utils/fetchWithAuth'
 
 function pad(n: number) {
   return n < 10 ? `0${n}` : n
@@ -10,7 +11,7 @@ interface SortConfig {
   direction: SortDirection
 }
 
-export default function MesDetallePage({ token }: { token: string }) {
+export default function MesDetallePage({ token, onLogout }: { token: string; onLogout?: () => void }) {
   const today = new Date()
   const [anio, setAnio] = useState(today.getFullYear())
   const [mes, setMes] = useState(today.getMonth() + 1)
@@ -108,12 +109,14 @@ export default function MesDetallePage({ token }: { token: string }) {
         desde = `${anio}-${mesStr}-${diaStr}`
         hasta = desde
       }
-      const ventasRes = await fetch(`http://localhost:8000/ventas?desde=${desde}&hasta=${hasta}`, {
-        headers: { Authorization: `Bearer ${token}` }
+      const ventasRes = await fetchWithAuth(`http://localhost:8000/ventas?desde=${desde}&hasta=${hasta}`, {
+        token,
+        onLogout,
       })
       if (!ventasRes.ok) throw new Error('Error cargando ventas')
-      const facturasRes = await fetch(`http://localhost:8000/facturas?desde=${desde}&hasta=${hasta}`, {
-        headers: { Authorization: `Bearer ${token}` }
+      const facturasRes = await fetchWithAuth(`http://localhost:8000/api/facturas?desde=${desde}&hasta=${hasta}`, {
+        token,
+        onLogout,
       })
       if (!facturasRes.ok) throw new Error('Error cargando facturas')
       setVentas(await ventasRes.json())
@@ -482,6 +485,12 @@ export default function MesDetallePage({ token }: { token: string }) {
                 <tr style={{ background: '#b3c6e0' }}>
                   <th
                     style={{ cursor: 'pointer' }}
+                    onClick={() => handleSortFacturas('fecha')}
+                  >
+                    Fecha{renderSortIndicator('fecha')}
+                  </th>
+                  <th
+                    style={{ cursor: 'pointer' }}
                     onClick={() => handleSortFacturas('id')}
                   >
                     ID{renderSortIndicator('id')}
@@ -492,12 +501,7 @@ export default function MesDetallePage({ token }: { token: string }) {
                   >
                     Proveedor{renderSortIndicator('proveedor')}
                   </th>
-                  <th
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => handleSortFacturas('fecha')}
-                  >
-                    Fecha{renderSortIndicator('fecha')}
-                  </th>
+                  
                   <th
                     style={{ cursor: 'pointer' }}
                     onClick={() => handleSortFacturas('importe_total_euro')}
@@ -531,9 +535,9 @@ export default function MesDetallePage({ token }: { token: string }) {
                   </tr>
                 ) : sortedFacturas.map((f, i) => (
                   <tr key={i}>
+                    <td>{f.fecha}</td>
                     <td>{f.id}</td>
                     <td>{f.proveedor}</td>
-                    <td>{f.fecha}</td>
                     <td>{f.importe_total_euro}</td>
                     <td>{f.importe_sin_iva_euro}</td>
                     <td>{f.pais_origen}</td>

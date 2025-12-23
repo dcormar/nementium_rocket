@@ -61,15 +61,20 @@ def parse_date_ddmmyyyy(s: str | None) -> str | None:
     except Exception:
         return None
 
-def parse_tipo_cambio(valor: str | None) -> float | None:
-    if not valor:
+def parse_tipo_cambio(valor: str | float | None) -> float | None:
+    if valor is None:
         return 1.0
+    # Si ya es un número, devolverlo directamente
+    if isinstance(valor, (int, float)):
+        return float(valor) if valor != 0 else None
+    # Si es string, procesarlo
     s = valor.strip().upper()
-    if s in {"N/A", "NA", "N.A.", "NONE", "-"}:
+    if s in {"N/A", "NA", "N.A.", "NONE", "-", ""}:
         return None
     s = s.replace(",", ".")
     try:
-        return float(s)
+        result = float(s)
+        return result if result != 0 else None
     except ValueError:
         return 1.0
 
@@ -97,6 +102,42 @@ def parse_importe_a_eur(importe_str: str | float | None, tipo_cambio: str | floa
     if tc == 0:
         return None
     return round(importe * tc, 2)
+
+# ===== Helper: Insertar registro en automations =====
+async def insert_automation_record(n8n_workflow_name: str) -> str | None:
+    """
+    Inserta un registro en la tabla 'automations' con status='STARTED'.
+    Retorna el ID del registro insertado o None si falla.
+    """
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        logger.warning("insert_automation_record: Supabase no configurado")
+        return None
+    
+    automation_payload = {
+        "n8n_workflow_name": n8n_workflow_name,
+        "status": "STARTED",
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=10, verify=certifi.where()) as client:
+            resp = await client.post(
+                f"{SUPABASE_URL}/rest/v1/automations",
+                headers=supabase_headers(),
+                json=automation_payload
+            )
+        if resp.status_code not in (200, 201):
+            logger.error("Insert automation falló %s: %s", resp.status_code, resp.text)
+            return None
+        result = resp.json()
+        automation_id = result[0].get("id") if isinstance(result, list) and result else result.get("id") if isinstance(result, dict) else None
+        logger.info("Automation record creado: id=%s, workflow=%s", automation_id, n8n_workflow_name)
+        return automation_id
+    except httpx.RequestError as e:
+        logger.exception("Error de red insertando automation record: %s", e)
+        return None
+    except Exception as e:
+        logger.exception("Error insertando automation record: %s", e)
+        return None
 
 # ===== CAMBIO: logs + sin verificación TLS en la llamada a n8n =====
 async def post_to_n8n(payload: dict) -> tuple[int, str]:
@@ -131,6 +172,7 @@ async def post_to_n8n(payload: dict) -> tuple[int, str]:
 async def upload_file(
     file: UploadFile = File(...),
     tipo: str = Form(...),
+    iaprocess: str = Form("true"),  # Por defecto true para mantener compatibilidad
     current_user: UserInDB = Depends(get_current_user),
 ):
     base = get_upload_base()
@@ -193,6 +235,7 @@ async def upload_file(
                     "file_size_bytes": size_bytes,
                     "sha256": sha256,
                     "source": "manual",
+                    "manual":  not iaprocess,
                 }
                 resp = await client.post(
                     f"{SUPABASE_URL}/rest/v1/uploads",
@@ -210,12 +253,21 @@ async def upload_file(
         logger.exception("Error de red con Supabase")
         raise HTTPException(status_code=502, detail=f"Error de red con Supabase: {e}") from e
 
+
+    
+    # Insertar registro en automations antes de llamar a n8n
+    await insert_automation_record(tipo)
+    
     # Llamada a n8n (sin verificar TLS y con logs)
+    # iaprocess puede ser "true" o "false" como string
+    iaprocess_bool = iaprocess.lower() == "true"
     n8n_payload = {
         "tipo": tipo,            # "factura" | "venta"
         "storage": "local",
         "user": current_user.username,
         "filename": safe_name,
+        "upload_id": upload_id,
+        "iaprocess": iaprocess_bool,  # Añadido parámetro iaprocess
     }
     try:
         status, text = await post_to_n8n(n8n_payload)
@@ -289,7 +341,7 @@ async def retry_webhook(
                 )
             else:
                 r = await client.get(
-                    f"{SUPABASE_URL}/rest/v1/uploads?id=eq.{upload_id}&select=id,original_filename,status,tipo",
+                    f"{SUPABASE_URL}/rest/v1/uploads?id=eq.{upload_id}&select=id,original_filename,status,tipo,manual",
                     headers=supabase_headers()
                 )
         if r.status_code != 200:
@@ -302,8 +354,12 @@ async def retry_webhook(
         raise HTTPException(status_code=502, detail=f"Error de red leyendo upload: {e}") from e
 
     filename = row.get("original_filename")
+    manual = row.get("manual")
     if not filename:
         raise HTTPException(status_code=400, detail="El upload no tiene filename")
+
+    # Insertar registro en automations antes de llamar a n8n
+    await insert_automation_record(tipo)
 
     # 2) Lanzar webhook (sin TLS verify + logs)
     payload = {
@@ -311,6 +367,8 @@ async def retry_webhook(
         "storage": "local",
         "user": current_user.username,
         "filename": filename,
+        "iaprocess": not manual,
+        "upload_id": upload_id,
     }
     try:
         status, text = await post_to_n8n(payload)
@@ -392,47 +450,165 @@ async def automate_callback(request: Request):
     if not id_ext:
         raise HTTPException(status_code=400, detail="Falta 'ID Factura' en callback")
 
-    fecha_txt = (payload.get("Fecha de la Factura") or "").strip()  # DD/MM/YYYY
-    fecha_iso = parse_date_ddmmyyyy(fecha_txt)
+    status_n8n = (payload.get("status_n8n") or "OK").strip()
+    
+    # Verificar si iaprocess es false
+    iaprocess = payload.get("iaprocess", True)
+    if isinstance(iaprocess, str):
+        iaprocess = iaprocess.lower() == "true"
+    iaprocess = bool(iaprocess) if iaprocess is not None else True
 
-    categoria   = payload.get("Categoría") or payload.get("Categoria")
-    proveedor   = payload.get("Emisor") or payload.get("Proveedor")
-    descripcion = payload.get("Descripción") or payload.get("Descripcion")
-    importe_sin_iva = parse_decimal_es(payload.get("Importe (sin IVA)"))
-    iva_pct         = parse_decimal_es(payload.get("IVA %"))
-    importe_total           = parse_decimal_es(payload.get("Total"))
-    moneda          = (payload.get("Moneda") or "").strip() or None
-    tipo_cambio     = (payload.get("Tipo Cambio") or "").strip() or None
-    importe_sin_iva_eur = parse_importe_a_eur(importe_sin_iva, tipo_cambio)
-    importe_total_eur = parse_importe_a_eur(importe_total, tipo_cambio)
-    pais_origen     = payload.get("País origen") or payload.get("Pais origen")
-    notas           = (payload.get("Notas") or "").strip() or None
-    supplier_vat_number = (payload.get("provider_VAT") or "").strip() or None
-    ubicacion_factura = (payload.get("ubicacion_factura") or "").strip() or None
+    # Si iaprocess es false, solo actualizar ubicacion_factura
+    if not iaprocess:
+        ubicacion_factura = (payload.get("ubicacion_factura") or "").strip() or None
+        
+        if status_n8n == "ERROR":
+            logger.warning("Callback con iaprocess=false y status_n8n=ERROR para ID Factura: %s", id_ext)
+            return {"ok": False, "error": "status_n8n=ERROR", "id_ext": id_ext}
+        try:
+            async with httpx.AsyncClient(timeout=20, verify=certifi.where()) as client:
+                # Primero tenemos que obtener de Supabase el id_factura, buscándolo en uploads
+                get_resp = await client.get(
+                    f"{SUPABASE_URL}/rest/v1/uploads?id=eq.{id_ext}&select=factura_id", 
+                    headers=supabase_headers()
+                )
+                if get_resp.status_code != 200:
+                    logger.error("Error buscando upload por id: %s", get_resp.text)
+                    raise HTTPException(status_code=502, detail=f"Error buscando upload: {get_resp.text}")
+                rows = get_resp.json()
+                if not rows:
+                    raise HTTPException(status_code=404, detail="upload no encontrado")
+                row = rows[0]
+                factura_id = row.get("factura_id")
+                
+                # Actualizar solo ubicacion_factura en la factura existente
+                patch_data = {"ubicacion_factura": ubicacion_factura}
+                patch_resp = await client.patch(
+                    f"{SUPABASE_URL}/rest/v1/facturas?id=eq.{factura_id}",
+                    headers=supabase_headers({"Prefer": "return=representation"}),
+                    json=patch_data
+                )
+                
+                if patch_resp.status_code not in (200, 204):
+                    logger.error("Error actualizando ubicacion_factura: %s", patch_resp.text)
+                    raise HTTPException(status_code=502, detail=f"Error actualizando factura: {patch_resp.text}")
+                
+                # Verificar si se actualizó alguna fila
+                # PostgREST devuelve un array con las filas actualizadas, o un objeto vacío si no hay filas
+                updated_rows = None
+                try:
+                    response_body = patch_resp.json()
+                    if isinstance(response_body, list):
+                        updated_rows = response_body
+                    elif isinstance(response_body, dict):
+                        # Si es un objeto, podría ser una sola fila o vacío
+                        updated_rows = [response_body] if response_body else []
+                    else:
+                        updated_rows = []
+                except Exception:
+                    # Si no hay JSON o está vacío, verificar Content-Range header
+                    content_range = patch_resp.headers.get("Content-Range", "")
+                    # Content-Range tiene formato "0-0/0" si no hay filas, o "0-0/1" si hay 1 fila
+                    if content_range and "/" in content_range:
+                        total = content_range.split("/")[-1]
+                        updated_rows = [] if total == "0" else [{}]  # Simulamos que hay filas si total > 0
+                    else:
+                        updated_rows = []
+                
+                # Actualizar status en uploads según el resultado
+                if not updated_rows or len(updated_rows) == 0:
+                    logger.warning("No se actualizó ninguna fila en facturas para factura_id=%s (id_ext=%s)", factura_id, id_ext)
+                    # Actualizar uploads con status=FAILED
+                    try:
+                        patch_upload_resp = await client.patch(
+                            f"{SUPABASE_URL}/rest/v1/uploads?id=eq.{id_ext}",
+                            headers=supabase_headers(),
+                            json={"status": "FAILED"}
+                        )
+                        if patch_upload_resp.status_code not in (200, 204):
+                            logger.warning("No se pudo actualizar uploads a FAILED para id=%s: %s %s",
+                                         id_ext, patch_upload_resp.status_code, patch_upload_resp.text)
+                        else:
+                            logger.info("uploads actualizado a FAILED para id=%s", id_ext)
+                    except httpx.RequestError:
+                        logger.exception("Error de red al actualizar uploads (status FAILED)")
+                    return {"ok": False, "error": "No se encontró factura para actualizar", "id_ext": id_ext, "factura_id": factura_id}
+                
+                # Se actualizó correctamente, marcar uploads como PROCESSED
+                try:
+                    patch_upload_resp = await client.patch(
+                        f"{SUPABASE_URL}/rest/v1/uploads?id=eq.{id_ext}",
+                        headers=supabase_headers(),
+                        json={"status": "PROCESSED"}
+                    )
+                    if patch_upload_resp.status_code not in (200, 204):
+                        logger.warning("No se pudo actualizar uploads a PROCESSED para id=%s: %s %s",
+                                     id_ext, patch_upload_resp.status_code, patch_upload_resp.text)
+                    else:
+                        logger.info("uploads actualizado a PROCESSED para id=%s", id_ext)
+                except httpx.RequestError:
+                    logger.exception("Error de red al actualizar uploads (status PROCESSED)")
+                
+                logger.info("Factura con id=%s actualizada con ubicacion_factura=%s (iaprocess=false)", factura_id, ubicacion_factura)
+                return {"ok": True, "id_ext": id_ext, "factura_id": factura_id, "iaprocess": False}
+                
+        except httpx.RequestError as e:
+            logger.exception("Error de red actualizando factura (iaprocess=false)")
+            raise HTTPException(status_code=502, detail=f"Error de red: {e}") from e
+
+    # Procesamiento normal cuando iaprocess es true o no se especifica
+    if status_n8n is not "ERROR": 
+        fecha_txt = (payload.get("Fecha de la Factura") or "").strip()  # DD/MM/YYYY
+        fecha_iso = parse_date_ddmmyyyy(fecha_txt)
+
+        categoria   = payload.get("Categoría") or payload.get("Categoria")
+        proveedor   = payload.get("Emisor") or payload.get("Proveedor")
+        descripcion = payload.get("Descripción") or payload.get("Descripcion")
+        importe_sin_iva = parse_decimal_es(payload.get("Importe (sin IVA)"))
+        iva_pct         = parse_decimal_es(payload.get("IVA %"))
+        importe_total           = parse_decimal_es(payload.get("Total"))
+        moneda          = (payload.get("Moneda") or "").strip() or None
+        # Manejar "Tipo Cambio" que puede venir como float o string
+        tipo_cambio_raw = payload.get("Tipo Cambio")
+        if tipo_cambio_raw is None:
+            tipo_cambio = None
+        elif isinstance(tipo_cambio_raw, (int, float)):
+            tipo_cambio = tipo_cambio_raw
+        else:
+            tipo_cambio = (str(tipo_cambio_raw).strip() or None) if tipo_cambio_raw else None
+        importe_sin_iva_eur = parse_importe_a_eur(importe_sin_iva, tipo_cambio)
+        importe_total_eur = parse_importe_a_eur(importe_total, tipo_cambio)
+        pais_origen     = payload.get("País origen") or payload.get("Pais origen")
+        notas           = (payload.get("Notas") or "").strip() or None
+        supplier_vat_number = (payload.get("provider_VAT") or "").strip() or None
+        ubicacion_factura = (payload.get("ubicacion_factura") or "").strip() or None
 
 
-    # Fila para facturas
-    factura_row = {
-        "id_ext": id_ext,
-        "supplier_vat_number": supplier_vat_number,   
-        "fecha": fecha_txt or None,                   
-        "total_moneda_local": importe_total or None,
-        "proveedor": proveedor or None,
-        "categoria": categoria or None,
-        "descripcion": descripcion or "Pending Process",
-        "moneda": moneda,
-        "tarifa_cambio": parse_tipo_cambio(tipo_cambio),
-        "pais_origen": pais_origen,
-        "notas": notas,
-        "ubicacion_factura": ubicacion_factura,
-        "iva_local": iva_pct,
-        "importe_sin_iva_local": importe_sin_iva,
-        "importe_sin_iva_euro": importe_sin_iva_eur,
-        "importe_total_euro": importe_total_eur
-    }
-    if fecha_iso:
-        factura_row["fecha_dt"] = fecha_iso  # si tienes la columna date
+        # Fila para facturas
+        factura_row = {
+            "id_ext": id_ext,
+            "supplier_vat_number": supplier_vat_number,   
+            "fecha": fecha_txt or None,                   
+            "total_moneda_local": importe_total or None,
+            "proveedor": proveedor or None,
+            "categoria": categoria or None,
+            "descripcion": descripcion or "Pending Process",
+            "moneda": moneda,
+            "tarifa_cambio": parse_tipo_cambio(tipo_cambio),
+            "pais_origen": pais_origen,
+            "notas": notas,
+            "ubicacion_factura": ubicacion_factura,
+            "iva_local": iva_pct,
+            "importe_sin_iva_local": importe_sin_iva,
+            "importe_sin_iva_euro": importe_sin_iva_eur,
+            "importe_total_euro": importe_total_eur
+        }
+        if fecha_iso:
+            factura_row["fecha_dt"] = fecha_iso  # si tienes la columna date
+    else:
+        factura_row = {
 
+        }
     # Upsert por clave compuesta generada
     # - No queremos actualizar si ya existe -> resolution=ignore-duplicates
     url = f"{SUPABASE_URL}/rest/v1/facturas?on_conflict=id_ext_compound"

@@ -1,6 +1,6 @@
 ----Subir factura/ventas-----
 1. Cuando se pone fichero sobre el espacio de arrastre, si no esta elegido factura ni venta, te abre el doc en otra pestaña. lo suyo es que haya un aviso o algo asi.
-
+2. se pueda marcar los gastos como deducibles o no. Ademas tener en cuenta que en vez de facturas, se debería de llamar todo mas genérico, "gasto".
 
 ----Temas técnicos----
 - actualizar a bcrypt 5 o usar argon2
@@ -8,3 +8,6 @@
     - tb, al dar al boton de "reintentar" una factura, cuando acaba no se actualiza el campo "descripción" del historico.
 - las facturas de aduanas no se gestionan bien con el llm, por lo que proponemos
     - capacidad en ui de poder actualizar los campos de una factura: se muestra en focus un cuadro con los detalles de la factura, y se pueden editar, con un botón "edit" a lado de cada uno.
+
+
+

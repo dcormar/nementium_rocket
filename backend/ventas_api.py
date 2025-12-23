@@ -4,6 +4,7 @@ import logging, os
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Optional
+import certifi
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -125,7 +126,7 @@ async def get_ventas(
     if params:
         url += '?' + '&'.join(params)
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30, verify=certifi.where()) as client:
         logger.debug(f"Consultando Supabase: {url}")
         r = await client.get(url, headers=headers)
         logger.debug(f"Respuesta Supabase status={r.status_code} body={r.text}")
@@ -141,7 +142,7 @@ async def get_ventas(
 async def add_venta(venta: Venta):
     url = f"{SUPABASE_URL}/rest/v1/ventas"
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30, verify=certifi.where()) as client:
         r = await client.post(url, headers=headers, json=venta.dict(exclude_unset=True))
         if r.status_code not in (200, 201):
             raise HTTPException(status_code=500, detail="Error insertando en Supabase")

@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react'
+import { fetchWithAuth } from '../utils/fetchWithAuth'
 
-export default function EstadoModelosPage({ token }: { token: string }) {
+export default function EstadoModelosPage({ token, onLogout }: { token: string; onLogout?: () => void }) {
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('http://localhost:8000/modelos/estado', {
-      headers: { Authorization: `Bearer ${token}` }
+    fetchWithAuth('http://localhost:8000/modelos/estado', {
+      token,
+      onLogout,
     })
       .then(r => r.json())
       .then(setData)
       .finally(() => setLoading(false))
-  }, [token])
+  }, [token, onLogout])
 
   if (loading) return <div>Cargando...</div>
   if (!data) return <div>Error cargando estado</div>

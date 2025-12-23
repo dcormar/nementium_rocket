@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import UploadPage from './pages/UploadPage'
@@ -10,12 +10,73 @@ import './App.css'
 import logo from './assets/logo.png'
 // Iconos
 import { LogOut, User } from 'lucide-react'
+import { fetchWithAuth } from './utils/fetchWithAuth'
 
 function App() {
   const [token, setToken] = useState<string | null>(null)
   const [page, setPage] = useState('dashboard')
+  const [checkingToken, setCheckingToken] = useState(false)
+
+  const handleLogout = () => {
+    setToken(null)
+    setPage('dashboard')
+  }
+
+  // Verificar si el token es válido cuando cambia el token, la página, o al montar
+  useEffect(() => {
+    if (!token) return
+
+    const verifyToken = async () => {
+      setCheckingToken(true)
+      try {
+        const response = await fetchWithAuth('http://localhost:8000/auth/me', {
+          token,
+          onLogout: handleLogout,
+        })
+        if (!response.ok) {
+          // Si el token no es válido, handleLogout ya fue llamado por fetchWithAuth
+          return
+        }
+      } catch (error) {
+        // Si hay un error de red, también cerramos sesión por seguridad
+        console.error('Error verificando token:', error)
+        handleLogout()
+      } finally {
+        setCheckingToken(false)
+      }
+    }
+
+    verifyToken()
+  }, [token, page]) // Verificar cuando cambia el token o la página
+
+  // También verificar periódicamente cada 5 minutos
+  useEffect(() => {
+    if (!token) return
+
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetchWithAuth('http://localhost:8000/auth/me', {
+          token,
+          onLogout: handleLogout,
+        })
+        if (!response.ok) {
+          // Si el token no es válido, handleLogout ya fue llamado por fetchWithAuth
+          return
+        }
+      } catch (error) {
+        console.error('Error verificando token periódicamente:', error)
+        handleLogout()
+      }
+    }, 5 * 60 * 1000) // Cada 5 minutos
+
+    return () => clearInterval(interval)
+  }, [token])
 
   if (!token) return <LoginPage onLogin={setToken} />
+  
+  if (checkingToken) {
+    return <div style={{ padding: '2rem', textAlign: 'center' }}>Verificando sesión...</div>
+  }
 
   return (
     <div>
@@ -88,7 +149,7 @@ function App() {
             <User className="w-5 h-5" />
           </button>
           <button
-            onClick={() => { setToken(null); setPage('dashboard') }}
+            onClick={handleLogout}
             className="navlink p-1"
             aria-label="Salir"
             title="Salir"
@@ -99,10 +160,10 @@ function App() {
       </nav>
 
       <main style={{ marginTop: '4rem' }}>
-        {page === 'dashboard' && <DashboardPage token={token} />}
-        {page === 'upload' && <UploadPage token={token} />}
-        {page === 'estado' && <EstadoModelosPage token={token} />}
-        {page === 'mesdetalle' && <MesDetallePage token={token} />}
+        {page === 'dashboard' && <DashboardPage token={token} onLogout={handleLogout} />}
+        {page === 'upload' && <UploadPage token={token} onLogout={handleLogout} />}
+        {page === 'estado' && <EstadoModelosPage token={token} onLogout={handleLogout} />}
+        {page === 'mesdetalle' && <MesDetallePage token={token} onLogout={handleLogout} />}
       </main>
     </div>
   )
