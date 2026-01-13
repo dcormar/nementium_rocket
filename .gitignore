@@ -29,10 +29,13 @@ __pycache__/
 *.sln
 *.sw?
 
-# Archivos de entorno
+# Archivos de entorno (en cualquier directorio)
 .env
 .env.local
 .env.*.local
+**/.env
+**/.env.local
+**/.env.*.local
 
 # Credenciales (Google Drive, etc.)
 credentials/
