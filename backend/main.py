@@ -17,6 +17,7 @@ from processing_api import router as processing_router
 from consulta_api import router as consulta_router
 from assistant_api import router as assistant_router
 from telegram_webhook_api import router as telegram_webhook_router
+from email_contact_helper_api import router as email_contact_helper_router
 from contextlib import asynccontextmanager
 
 
@@ -129,6 +130,7 @@ app.include_router(processing_router)
 app.include_router(consulta_router)
 app.include_router(assistant_router)
 app.include_router(telegram_webhook_router)
+app.include_router(email_contact_helper_router)
 
 logger.info("Routers montados y aplicación FastAPI iniciada")
 

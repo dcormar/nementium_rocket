@@ -5,6 +5,7 @@ import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from langchain.tools import tool
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,13 @@ try:
 except ImportError:
     DDG_AVAILABLE = False
     logger.warning("duckduckgo-search no está instalado. Búsqueda web no disponible.")
+
+try:
+    from bs4 import BeautifulSoup
+    BS4_AVAILABLE = True
+except ImportError:
+    BS4_AVAILABLE = False
+    logger.warning("beautifulsoup4 no está instalado. fetch_url no disponible.")
 
 
 @tool
@@ -253,5 +261,123 @@ def verify_company_info(company_name: str, country: Optional[str] = None) -> Dic
         raise ValueError(f"Error verificando información de empresa: {str(e)}")
 
 
+@tool
+async def fetch_url(url: str, max_chars: int = 5000) -> Dict[str, Any]:
+    """
+    Obtiene el contenido de una URL y extrae el texto limpio.
+    Útil para analizar páginas web de empresas, perfiles de LinkedIn, etc.
+    
+    Args:
+        url: URL completa a visitar (ej: "https://empresa.com/about")
+        max_chars: Máximo de caracteres a retornar (default: 5000)
+    
+    Returns:
+        Dict con:
+        - url: URL visitada
+        - title: Título de la página
+        - content: Texto limpio extraído (limitado a max_chars)
+        - success: Si la extracción fue exitosa
+        - error: Mensaje de error si falló
+    """
+    if not BS4_AVAILABLE:
+        return {
+            "url": url,
+            "title": "",
+            "content": "",
+            "success": False,
+            "error": "beautifulsoup4 no está instalado"
+        }
+    
+    # Validar URL
+    if not url.startswith(("http://", "https://")):
+        return {
+            "url": url,
+            "title": "",
+            "content": "",
+            "success": False,
+            "error": "URL debe comenzar con http:// o https://"
+        }
+    
+    # Limitar max_chars
+    if max_chars > 10000:
+        max_chars = 10000
+    if max_chars < 500:
+        max_chars = 500
+    
+    logger.info(f"[FETCH_URL] Obteniendo contenido de: {url}")
+    
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+        }
+        
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+        
+        # Parsear HTML
+        soup = BeautifulSoup(response.text, "lxml")
+        
+        # Obtener título
+        title = ""
+        if soup.title and soup.title.string:
+            title = soup.title.string.strip()
+        
+        # Eliminar scripts, styles y otros elementos no relevantes
+        for element in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "iframe"]):
+            element.decompose()
+        
+        # Extraer texto
+        text = soup.get_text(separator=" ", strip=True)
+        
+        # Limpiar espacios múltiples
+        import re
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Limitar caracteres
+        if len(text) > max_chars:
+            text = text[:max_chars] + "..."
+        
+        logger.info(f"[FETCH_URL] Extraídos {len(text)} caracteres de {url}")
+        
+        return {
+            "url": url,
+            "title": title,
+            "content": text,
+            "success": True,
+            "error": None
+        }
+        
+    except httpx.TimeoutException:
+        logger.error(f"[FETCH_URL] Timeout al obtener {url}")
+        return {
+            "url": url,
+            "title": "",
+            "content": "",
+            "success": False,
+            "error": "Timeout al cargar la página"
+        }
+    except httpx.HTTPStatusError as e:
+        logger.error(f"[FETCH_URL] Error HTTP {e.response.status_code} al obtener {url}")
+        return {
+            "url": url,
+            "title": "",
+            "content": "",
+            "success": False,
+            "error": f"Error HTTP {e.response.status_code}"
+        }
+    except Exception as e:
+        logger.error(f"[FETCH_URL] Error al obtener {url}: {e}")
+        return {
+            "url": url,
+            "title": "",
+            "content": "",
+            "success": False,
+            "error": str(e)
+        }
+
+
 # Lista de herramientas de búsqueda web
-WEB_SEARCH_TOOLS = [web_search, search_exchange_rate, verify_company_info]
+WEB_SEARCH_TOOLS = [web_search, search_exchange_rate, verify_company_info, fetch_url]

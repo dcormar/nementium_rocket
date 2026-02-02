@@ -21,9 +21,9 @@ bcrypt==3.2.2              # <- fija versión compatible y evita warning/errores
 psycopg2-binary==2.9.9
 # Nota: Ya no usamos supabase-py, usamos httpx directamente para llamadas REST
 
-# Tipado / validación
-pydantic==2.9.2
-pydantic-settings==2.7.0
+# Tipado / validación (>=2.11.7 para compatibilidad con storage3/realtime)
+pydantic>=2.11.7,<3.0.0
+pydantic-settings>=2.6.0,<3.0.0
 
 # Crypto
 cryptography==43.0.3
@@ -63,3 +63,7 @@ nest-asyncio==1.6.0
 
 # Email service (Resend)
 resend==2.0.0
+
+# HTML parsing for web scraping
+beautifulsoup4==4.12.3
+lxml==5.3.0

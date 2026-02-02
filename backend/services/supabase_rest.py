@@ -153,6 +153,9 @@ class SupabaseREST:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             r = await client.patch(url, headers=headers, json=data)
         r.raise_for_status()
+        # PostgREST devuelve cuerpo vacío (204) si no se usa Prefer: return=representation
+        if not r.content or r.content.strip() == b"":
+            return []
         result = r.json()
         return result if isinstance(result, list) else [result] if result else []
 
@@ -189,6 +192,8 @@ class SupabaseREST:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             r = await client.delete(url, headers=self.headers)
         r.raise_for_status()
+        if not r.content or r.content.strip() == b"":
+            return []
         result = r.json()
         return result if isinstance(result, list) else [result] if result else []
 
