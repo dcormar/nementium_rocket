@@ -15,10 +15,10 @@ try:
     backend_dir = current_file.parent.parent  # backend/services/ -> backend/
     env_path = backend_dir / ".env"
     if env_path.exists():
-        load_dotenv(dotenv_path=env_path, override=False)
+        load_dotenv(dotenv_path=env_path, override=True)  # override=True para que .env tenga prioridad
     else:
         # Fallback: intentar cargar desde directorio actual
-        load_dotenv(override=False)
+        load_dotenv(override=True)
 except ImportError:
     # dotenv no disponible, continuar sin cargar (asumiendo que main.py ya lo cargó)
     pass
@@ -62,11 +62,15 @@ async def send_telegram_message(
     }
     
     logger.info(f"[TELEGRAM] Enviando mensaje a chat_id={chat_id}")
+    logger.debug(f"[TELEGRAM] URL: {url}")
+    logger.debug(f"[TELEGRAM] Token configurado: {TELEGRAM_BOT_TOKEN[:10]}...{TELEGRAM_BOT_TOKEN[-5:] if len(TELEGRAM_BOT_TOKEN) > 15 else 'CORTO'}")
     
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json=payload, timeout=30)
+            logger.debug(f"[TELEGRAM] Response status: {response.status_code}")
             result = response.json()
+            logger.debug(f"[TELEGRAM] Response body: {result}")
             
             if result.get("ok"):
                 logger.info(f"[TELEGRAM] Mensaje enviado: message_id={result.get('result', {}).get('message_id')}")

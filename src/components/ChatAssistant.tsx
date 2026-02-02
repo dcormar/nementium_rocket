@@ -524,7 +524,7 @@ export default function ChatAssistant({ token, onLogout }: ChatAssistantProps) {
                 transition: 'background 0.2s',
               }}
             >
-              <Send size={18} />
+              <Send size={22} />
             </button>
           </form>
         </div>

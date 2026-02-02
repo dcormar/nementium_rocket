@@ -375,11 +375,20 @@ async def send_telegram_notification(
         
         logger.info(f"[ASSISTANT] Validación OK: contact_id {contact_id} -> telegram_username @{contact.get('telegram_username')}")
         
-        # Enviar mensaje
-        await send_telegram_message(
+        # Enviar mensaje y verificar resultado
+        result = await send_telegram_message(
             chat_id=contact["telegram_chat_id"],
             message=formatted_message
         )
+        
+        # Verificar si el envío fue exitoso
+        if not result.get("success"):
+            error_msg = result.get("error", "Error desconocido")
+            logger.error(f"[ASSISTANT] Error en envío de Telegram: {error_msg}")
+            return {
+                "success": False,
+                "error": f"❌ No se pudo enviar el mensaje de Telegram: {error_msg}"
+            }
         
         logger.info(f"[ASSISTANT] Telegram enviado a {contact['nombre']}")
         telegram_username = contact.get("telegram_username", "el contacto")
