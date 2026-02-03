@@ -2,19 +2,29 @@
 # Herramientas de búsqueda online para el agente de consulta
 
 import logging
+import asyncio
+import os
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from langchain.tools import tool
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Timeout por defecto para búsquedas web (segundos)
+DEFAULT_WEB_SEARCH_TIMEOUT = 15
+
+# Serper.dev API key (fallback cuando DuckDuckGo falla)
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
+SERPER_API_URL = "https://google.serper.dev/search"
 
 try:
     from duckduckgo_search import DDGS
     DDG_AVAILABLE = True
 except ImportError:
     DDG_AVAILABLE = False
-    logger.warning("duckduckgo-search no está instalado. Búsqueda web no disponible.")
+    logger.warning("duckduckgo-search no está instalado.")
 
 try:
     from bs4 import BeautifulSoup
@@ -24,17 +34,100 @@ except ImportError:
     logger.warning("beautifulsoup4 no está instalado. fetch_url no disponible.")
 
 
+def _serper_search_sync(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+    """
+    Búsqueda usando Serper.dev (Google Search API).
+    Usado como fallback cuando DuckDuckGo falla.
+    """
+    if not SERPER_API_KEY:
+        logger.warning("[SERPER] API key no configurada (SERPER_API_KEY)")
+        return []
+
+    try:
+        response = httpx.post(
+            SERPER_API_URL,
+            headers={
+                "X-API-KEY": SERPER_API_KEY,
+                "Content-Type": "application/json"
+            },
+            json={
+                "q": query,
+                "num": max_results,
+                "gl": "es",  # España
+                "hl": "es"   # Español
+            },
+            timeout=10.0
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        results = []
+        for item in data.get("organic", [])[:max_results]:
+            results.append({
+                "name": item.get("title", ""),
+                "url": item.get("link", ""),
+                "snippet": item.get("snippet", "")
+            })
+
+        logger.info(f"[SERPER] Encontrados {len(results)} resultados para: {query[:50]}...")
+        return results
+
+    except httpx.TimeoutException:
+        logger.warning(f"[SERPER] Timeout para query: {query}")
+        return []
+    except Exception as e:
+        logger.error(f"[SERPER] Error en búsqueda: {e}")
+        return []
+
+
+def _web_search_sync(query: str, max_results: int = 5, timeout: int = DEFAULT_WEB_SEARCH_TIMEOUT) -> List[Dict[str, str]]:
+    """
+    Función interna síncrona para búsqueda web.
+    Intenta primero con DuckDuckGo, si falla usa Serper.dev como fallback.
+    """
+    if max_results > 10:
+        max_results = 10
+    if max_results < 1:
+        max_results = 5
+
+    results = []
+
+    # 1. Intentar con DuckDuckGo primero
+    if DDG_AVAILABLE:
+        try:
+            with DDGS() as ddgs:
+                for r in ddgs.text(query, max_results=max_results):
+                    results.append({
+                        "name": r.get("title", ""),
+                        "url": r.get("href", ""),
+                        "snippet": r.get("body", "")
+                    })
+            if results:
+                logger.debug(f"[WEB_SEARCH] DDG encontró {len(results)} resultados")
+                return results
+        except Exception as e:
+            logger.warning(f"[WEB_SEARCH] DuckDuckGo falló ({e}), intentando Serper...")
+
+    # 2. Fallback a Serper.dev si DDG no disponible o falló/vacío
+    if not results and SERPER_API_KEY:
+        logger.info(f"[WEB_SEARCH] Usando Serper.dev como fallback para: {query[:50]}...")
+        results = _serper_search_sync(query, max_results)
+
+    return results
+
+
 @tool
-def web_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+def web_search(query: str, max_results: int = 5, timeout: int = DEFAULT_WEB_SEARCH_TIMEOUT) -> List[Dict[str, str]]:
     """
     Busca información en internet usando un motor de búsqueda.
     Útil para verificar datos de proveedores, obtener tipos de cambio,
     buscar información contextual sobre facturas, etc.
-    
+
     Args:
         query: Términos de búsqueda (ej: "Amazon España NIF", "tipo cambio USD EUR")
         max_results: Número máximo de resultados a retornar (default: 5, máx: 10)
-    
+        timeout: Timeout en segundos (default: 15)
+
     Returns:
         Lista de diccionarios con:
         - url: URL del resultado
@@ -42,30 +135,60 @@ def web_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
         - name: Nombre/título del resultado
     """
     if not DDG_AVAILABLE:
-        raise ValueError("Búsqueda web no disponible: duckduckgo-search no está instalado")
-    
-    if max_results > 10:
-        max_results = 10
-    if max_results < 1:
-        max_results = 5
-    
-    logger.info(f"[WEB_SEARCH] Buscando: {query} (max_results={max_results})")
-    
+        logger.warning("[WEB_SEARCH] DuckDuckGo no disponible, retornando lista vacía")
+        return []
+
+    logger.info(f"[WEB_SEARCH] Buscando: {query} (max_results={max_results}, timeout={timeout}s)")
+
     try:
-        results = []
-        with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=max_results):
-                results.append({
-                    "name": r.get("title", ""),  # Usar 'name' en lugar de 'title' para evitar warning
-                    "url": r.get("href", ""),
-                    "snippet": r.get("body", "")
-                })
-        
-        logger.info(f"[WEB_SEARCH] Encontrados {len(results)} resultados")
-        return results
+        # Ejecutar búsqueda con timeout usando ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_web_search_sync, query, max_results, timeout)
+            try:
+                results = future.result(timeout=timeout)
+                logger.info(f"[WEB_SEARCH] Encontrados {len(results)} resultados")
+                return results
+            except TimeoutError:
+                logger.warning(f"[WEB_SEARCH] Timeout ({timeout}s) para query: {query}")
+                return []
     except Exception as e:
         logger.error(f"[WEB_SEARCH] Error en búsqueda: {e}")
-        raise ValueError(f"Error en búsqueda web: {str(e)}")
+        return []
+
+
+async def web_search_async(query: str, max_results: int = 5, timeout: int = DEFAULT_WEB_SEARCH_TIMEOUT) -> List[Dict[str, str]]:
+    """
+    Versión asíncrona de web_search para uso con asyncio.gather.
+    Permite ejecutar múltiples búsquedas en paralelo.
+
+    Args:
+        query: Términos de búsqueda
+        max_results: Número máximo de resultados (default: 5, máx: 10)
+        timeout: Timeout en segundos (default: 15)
+
+    Returns:
+        Lista de diccionarios con resultados (lista vacía si timeout o error)
+    """
+    if not DDG_AVAILABLE:
+        logger.warning("[WEB_SEARCH_ASYNC] DuckDuckGo no disponible, retornando lista vacía")
+        return []
+
+    logger.info(f"[WEB_SEARCH_ASYNC] Buscando: {query} (max_results={max_results}, timeout={timeout}s)")
+
+    try:
+        loop = asyncio.get_event_loop()
+        results = await asyncio.wait_for(
+            loop.run_in_executor(None, _web_search_sync, query, max_results, timeout),
+            timeout=timeout
+        )
+        logger.info(f"[WEB_SEARCH_ASYNC] Encontrados {len(results)} resultados para: {query[:50]}...")
+        return results
+    except asyncio.TimeoutError:
+        logger.warning(f"[WEB_SEARCH_ASYNC] Timeout ({timeout}s) para query: {query}")
+        return []
+    except Exception as e:
+        logger.error(f"[WEB_SEARCH_ASYNC] Error en búsqueda: {e}")
+        return []
 
 
 @tool
@@ -381,3 +504,6 @@ async def fetch_url(url: str, max_chars: int = 5000) -> Dict[str, Any]:
 
 # Lista de herramientas de búsqueda web
 WEB_SEARCH_TOOLS = [web_search, search_exchange_rate, verify_company_info, fetch_url]
+
+# Exportar también funciones async para uso directo
+__all__ = ['web_search', 'web_search_async', 'search_exchange_rate', 'verify_company_info', 'fetch_url', 'WEB_SEARCH_TOOLS', 'DEFAULT_WEB_SEARCH_TIMEOUT']
