@@ -1,10 +1,10 @@
 import { useState } from 'react'
+import { supabase } from '../utils/supabaseClient'
 import logologin from '../assets/logo-login.png'
 
-
 export default function LoginPage({ onLogin }: { onLogin: (token: string) => void }) {
-  const [email, setEmail] = useState('demo@demo.com')
-  const [password, setPassword] = useState('demo')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -13,16 +13,17 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
     setLoading(true)
     setError('')
     try {
-      const res = await fetch('/api/auth/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ username: email, password, grant_type: 'password' })
+      const { data, error: authError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
       })
-      if (!res.ok) throw new Error('Login incorrecto')
-      const data = await res.json()
-      onLogin(data.access_token)
-    } catch (err: any) {
-      setError(err.message)
+      if (authError) throw authError
+      if (data.session?.access_token) {
+        onLogin(data.session.access_token)
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error de autenticación'
+      setError(msg === 'Invalid login credentials' ? 'Email o contraseña incorrectos' : msg)
     } finally {
       setLoading(false)
     }
@@ -38,7 +39,7 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
         padding: '2rem',
       }}
     >
-      <div 
+      <div
         className="login-page"
         style={{
           display: 'flex',
@@ -53,9 +54,9 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
           boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
         }}
       >
-        <img 
-          src={logologin} 
-          alt="Logo" 
+        <img
+          src={logologin}
+          alt="Logo"
           style={{
             width: '200px',
             height: 'auto',
@@ -63,10 +64,10 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
             maxWidth: '100%',
           }}
         />
-        <h2 
-          style={{ 
-            textAlign: 'center', 
-            marginBottom: '2rem', 
+        <h2
+          style={{
+            textAlign: 'center',
+            marginBottom: '2rem',
             fontSize: '1.875rem',
             fontWeight: 700,
             background: 'linear-gradient(135deg, #3631a3 0%, #092342 100%)',
@@ -79,10 +80,10 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
           Iniciar sesión
         </h2>
         <form onSubmit={handleSubmit} style={{ width: '100%' }}>
-          <label 
-            style={{ 
-              display: 'block', 
-              marginBottom: '0.5rem', 
+          <label
+            style={{
+              display: 'block',
+              marginBottom: '0.5rem',
               color: '#3631a3',
               fontSize: '0.875rem',
               fontWeight: 600,
@@ -112,10 +113,10 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
                 boxSizing: 'border-box',
               }}
           />
-          <label 
-            style={{ 
-              display: 'block', 
-              marginBottom: '0.5rem', 
+          <label
+            style={{
+              display: 'block',
+              marginBottom: '0.5rem',
               color: '#3631a3',
               fontSize: '0.875rem',
               fontWeight: 600,
@@ -145,8 +146,8 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string) => voi
                 boxSizing: 'border-box',
               }}
           />
-          <button 
-            type="submit" 
+          <button
+            type="submit"
             disabled={loading}
             style={{
               width: '100%',

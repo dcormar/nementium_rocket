@@ -71,11 +71,26 @@ type AIData = {
   pais_origen?: string;
   categoria?: string;
   descripcion?: string;
+  // Clasificación fiscal
+  pais_factura?: string;
+  pais_ue?: string;
+  tipo_adquisicion?: string;
+  servicio_intracomunitario_sin_iva?: string;
+  servicio_extracomunitario_sin_iva?: string;
+  inversion_sujeto_pasivo?: string;
+  dua?: string;
+  gasto_nacional_iva_deducible?: string;
   [key: string]: any;
 };
 
-const ALLOWED_TYPES = [
+const ALLOWED_TYPES_FACTURA = [
   "application/pdf",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+];
+
+const ALLOWED_TYPES_VENTA = [
+  "text/csv",
+  "application/vnd.ms-excel",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ];
 
@@ -99,10 +114,19 @@ type ManualForm = {
   fecha_dt: string;
   supplier_vat_number: string;
   ubicacion_factura: string;
+  // Clasificación fiscal
+  pais_factura: string;
+  pais_ue: string;
+  tipo_adquisicion: string;
+  servicio_intracomunitario_sin_iva: string;
+  servicio_extracomunitario_sin_iva: string;
+  inversion_sujeto_pasivo: string;
+  dua: string;
+  gasto_nacional_iva_deducible: string;
 };
 
 const initialManualForm: ManualForm = {
-  fecha: new Date().toISOString().split('T')[0], // Fecha de hoy en formato YYYY-MM-DD
+  fecha: new Date().toISOString().split('T')[0],
   proveedor: "",
   total: "",
   categoria: "",
@@ -120,6 +144,15 @@ const initialManualForm: ManualForm = {
   fecha_dt: new Date().toISOString().split('T')[0],
   supplier_vat_number: "",
   ubicacion_factura: "tbd",
+  // Clasificación fiscal
+  pais_factura: "",
+  pais_ue: "NO",
+  tipo_adquisicion: "",
+  servicio_intracomunitario_sin_iva: "NO",
+  servicio_extracomunitario_sin_iva: "NO",
+  inversion_sujeto_pasivo: "NO",
+  dua: "NO",
+  gasto_nacional_iva_deducible: "NO",
 };
 
 // Lista abreviada de monedas y países (puedes ampliarla)
@@ -273,11 +306,44 @@ export default function UploadPage({ token, onLogout }: Props) {
   }, [token, currentPage, sortColumn, sortDirection]);
   // ==================================
 
+  // ====== VENTAS UPLOAD RESULT ======
+  const [ventasResult, setVentasResult] = useState<{
+    ok: boolean;
+    conflict?: "file" | "rows" | null;
+    filename: string;
+    total_rows: number;
+    new_rows_count?: number;
+    duplicate_rows_count?: number;
+    skipped?: number;
+    inserted: number;
+    upload_id?: number | null;
+    existing_upload?: {
+      id: number;
+      filename: string;
+      uploaded_at: string;
+      status: string;
+      imported_rows: number;
+    };
+    parse_errors: Array<{ row: number; error: string }>;
+    insert_errors: Array<{ batch_start: number; error: string }>;
+    error?: string;
+  } | null>(null);
+  const [ventasUploading, setVentasUploading] = useState(false);
+  const [ventasPendingFile, setVentasPendingFile] = useState<File | null>(null);
+  const [ventasConflictType, setVentasConflictType] = useState<"file" | "rows" | null>(null);
+
   // Helpers multi-archivo
   const isAllowed = (f: File) => {
     const name = f.name.toLowerCase();
+    if (docType === "venta") {
+      return (
+        ALLOWED_TYPES_VENTA.includes(f.type) ||
+        name.endsWith(".csv") ||
+        name.endsWith(".xlsx")
+      );
+    }
     return (
-      ALLOWED_TYPES.includes(f.type) ||
+      ALLOWED_TYPES_FACTURA.includes(f.type) ||
       name.endsWith(".pdf") ||
       name.endsWith(".xlsx")
     );
@@ -287,7 +353,10 @@ export default function UploadPage({ token, onLogout }: Props) {
     const incoming = Array.from(list);
     const valid = incoming.filter(isAllowed);
     if (valid.length !== incoming.length) {
-      alert("Algunos archivos fueron ignorados (solo PDF o XLSX).");
+      const msg = docType === "venta"
+        ? "Algunos archivos fueron ignorados (solo CSV o XLSX)."
+        : "Algunos archivos fueron ignorados (solo PDF o XLSX).";
+      alert(msg);
     }
     // dedupe por nombre+tamaño
     const dedup = [...files];
@@ -304,19 +373,29 @@ export default function UploadPage({ token, onLogout }: Props) {
 
   const clearFiles = () => setFiles([]);
 
+  /** Acepta cualquier tipo valido (para cuando no hay docType seleccionado aun) */
+  const isAllowedAny = (f: File) => {
+    const name = f.name.toLowerCase();
+    return (
+      name.endsWith(".pdf") ||
+      name.endsWith(".xlsx") ||
+      name.endsWith(".csv")
+    );
+  };
+
   // Eventos
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
-    
+
     // Si no hay tipo seleccionado, mostrar modal para elegir
     if (!docType) {
       const incoming = Array.from(e.target.files);
-      const valid = incoming.filter(isAllowed);
+      const valid = incoming.filter(isAllowedAny);
       if (valid.length > 0) {
         setPendingDropFiles(valid);
         setShowTypeSelectModal(true);
       } else {
-        alert("Algunos archivos fueron ignorados (solo PDF o XLSX).");
+        alert("Archivos no soportados (solo PDF, XLSX o CSV).");
       }
     } else {
       addFiles(e.target.files);
@@ -329,22 +408,22 @@ export default function UploadPage({ token, onLogout }: Props) {
     e.preventDefault();
     e.stopPropagation();
     setDragOver(false);
-    
+
     if (!e.dataTransfer.files?.length) return;
-    
+
     // Si no hay tipo seleccionado, mostrar modal para elegir
     if (!docType) {
       const incoming = Array.from(e.dataTransfer.files);
-      const valid = incoming.filter(isAllowed);
+      const valid = incoming.filter(isAllowedAny);
       if (valid.length > 0) {
         setPendingDropFiles(valid);
         setShowTypeSelectModal(true);
       } else {
-        alert("Algunos archivos fueron ignorados (solo PDF o XLSX).");
+        alert("Archivos no soportados (solo PDF, XLSX o CSV).");
       }
       return;
     }
-    
+
     addFiles(e.dataTransfer.files);
   };
 
@@ -374,12 +453,87 @@ export default function UploadPage({ token, onLogout }: Props) {
 
   const confirmUpload = async (forceUpload = false) => {
     if (!token || !docType || files.length === 0) return;
+
+    // ===== VENTAS: flujo directo a /api/ventas/upload =====
+    if (docType === "venta") {
+      setVentasUploading(true);
+      setShowConfirm(false);
+      try {
+        for (const file of files) {
+          const fd = new FormData();
+          fd.append("file", file);
+          fd.append("force", forceUpload ? "true" : "false");
+          fd.append("mode", "skip"); // default: sin forzar
+          const res = await fetchWithAuth("/api/ventas/upload", {
+            method: "POST",
+            token: token || undefined,
+            onLogout,
+            body: fd,
+          });
+          if (!res.ok) {
+            let errorMsg = "Error desconocido";
+            try {
+              const body = await res.json();
+              errorMsg = body.detail || JSON.stringify(body);
+            } catch {
+              errorMsg = await res.text();
+            }
+            console.error(`Fallo subiendo ventas ${file.name}:`, errorMsg);
+            setVentasResult({
+              ok: false,
+              filename: file.name,
+              total_rows: 0,
+              inserted: 0,
+              parse_errors: [],
+              insert_errors: [],
+              error: errorMsg,
+            });
+            continue;
+          }
+          const result = await res.json();
+
+          // Manejar conflictos de duplicados
+          if (result.conflict === "file" || result.conflict === "rows") {
+            setVentasResult(result);
+            setVentasPendingFile(file);
+            setVentasConflictType(result.conflict);
+            setVentasUploading(false);
+            // Guardar archivos restantes
+            const idx = files.indexOf(file);
+            if (idx < files.length - 1) {
+              setFiles(files.slice(idx + 1));
+            } else {
+              clearFiles();
+            }
+            return;
+          }
+
+          setVentasResult(result);
+        }
+        clearFiles();
+      } catch (err: any) {
+        setVentasResult({
+          ok: false,
+          filename: files[0]?.name || "desconocido",
+          total_rows: 0,
+          inserted: 0,
+          parse_errors: [],
+          insert_errors: [],
+          error: err?.message ?? String(err),
+        });
+      } finally {
+        setVentasUploading(false);
+      }
+      return;
+    }
+
+    // ===== FACTURAS: flujo existente =====
     setUploading(true);
     setUploadingIndex(0);
-    
+
     // Para facturas, recopilamos los upload_ids para el flujo paso a paso
     const uploadedFiles: Array<{file: File, uploadId: string}> = [];
-    
+
     try {
       // Secuencial: subir todos los archivos primero
       for (let i = 0; i < files.length; i++) {
@@ -394,7 +548,7 @@ export default function UploadPage({ token, onLogout }: Props) {
           onLogout,
           body: fd,
         });
-        
+
         // Manejar duplicado (409)
         if (res.status === 409) {
           const data = await res.json();
@@ -412,29 +566,29 @@ export default function UploadPage({ token, onLogout }: Props) {
             return;
           }
         }
-        
+
         if (!res.ok) {
           const t = await res.text();
           console.error(`Fallo subiendo ${files[i].name}:`, t);
           alert(`Fallo subiendo ${files[i].name}: ${t}`);
           continue;
         }
-        
+
         const result = await res.json();
-        
+
         // Para facturas, guardar el upload_id para el procesamiento paso a paso
-        if (docType === "factura" && result.upload_id) {
+        if (result.upload_id) {
           uploadedFiles.push({ file: files[i], uploadId: result.upload_id });
         }
-        
+
         loadHistorico();
         if (UPLOAD_DELAY_MS > 0) {
           await sleep(UPLOAD_DELAY_MS);
         }
       }
-      
-      // Para facturas: iniciar el flujo paso a paso
-      if (docType === "factura" && uploadedFiles.length > 0) {
+
+      // Iniciar el flujo paso a paso
+      if (uploadedFiles.length > 0) {
         setPendingFiles(uploadedFiles);
         setCurrentFileIndex(0);
         setCurrentUploadId(uploadedFiles[0].uploadId);
@@ -443,10 +597,9 @@ export default function UploadPage({ token, onLogout }: Props) {
         setShowConfirm(false);
         setUploading(false);
         setUploadingIndex(null);
-        return; // No cerrar el modal, el flujo paso a paso continuará
+        return;
       }
-      
-      // Para ventas: comportamiento original
+
       setShowConfirm(false);
       clearFiles();
       setShowSuccess(true);
@@ -552,6 +705,65 @@ export default function UploadPage({ token, onLogout }: Props) {
         setShowConfirm(true);
       }
     }
+  };
+
+  // ====== VENTAS DUPLICADOS: handlers ======
+  const handleVentasDuplicateAction = async (actionMode: "skip" | "upsert") => {
+    if (!ventasPendingFile || !token) return;
+    setVentasUploading(true);
+    setVentasConflictType(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", ventasPendingFile);
+      fd.append("force", "true");
+      fd.append("mode", actionMode);
+      const res = await fetchWithAuth("/api/ventas/upload", {
+        method: "POST",
+        token: token || undefined,
+        onLogout,
+        body: fd,
+      });
+      if (!res.ok) {
+        let errorMsg = "Error desconocido";
+        try {
+          const body = await res.json();
+          errorMsg = body.detail || JSON.stringify(body);
+        } catch {
+          errorMsg = await res.text();
+        }
+        setVentasResult({
+          ok: false,
+          filename: ventasPendingFile.name,
+          total_rows: 0,
+          inserted: 0,
+          parse_errors: [],
+          insert_errors: [],
+          error: errorMsg,
+        });
+      } else {
+        const result = await res.json();
+        setVentasResult(result);
+      }
+    } catch (err: any) {
+      setVentasResult({
+        ok: false,
+        filename: ventasPendingFile.name,
+        total_rows: 0,
+        inserted: 0,
+        parse_errors: [],
+        insert_errors: [],
+        error: err?.message ?? String(err),
+      });
+    } finally {
+      setVentasUploading(false);
+      setVentasPendingFile(null);
+    }
+  };
+
+  const handleVentasDuplicateCancel = () => {
+    setVentasResult(null);
+    setVentasPendingFile(null);
+    setVentasConflictType(null);
   };
 
   const disabled = !docType;
@@ -902,7 +1114,16 @@ export default function UploadPage({ token, onLogout }: Props) {
       if (manualForm.notas) fd.append("notas", manualForm.notas);
       if (manualForm.descripcion) fd.append("descripcion", manualForm.descripcion);
       if (manualForm.categoria) fd.append("categoria", manualForm.categoria);
-      
+      // Clasificación fiscal
+      if (manualForm.pais_factura) fd.append("pais_factura", manualForm.pais_factura);
+      if (manualForm.pais_ue) fd.append("pais_ue", manualForm.pais_ue);
+      if (manualForm.tipo_adquisicion) fd.append("tipo_adquisicion", manualForm.tipo_adquisicion);
+      if (manualForm.servicio_intracomunitario_sin_iva) fd.append("servicio_intracomunitario_sin_iva", manualForm.servicio_intracomunitario_sin_iva);
+      if (manualForm.servicio_extracomunitario_sin_iva) fd.append("servicio_extracomunitario_sin_iva", manualForm.servicio_extracomunitario_sin_iva);
+      if (manualForm.inversion_sujeto_pasivo) fd.append("inversion_sujeto_pasivo", manualForm.inversion_sujeto_pasivo);
+      if (manualForm.dua) fd.append("dua", manualForm.dua);
+      if (manualForm.gasto_nacional_iva_deducible) fd.append("gasto_nacional_iva_deducible", manualForm.gasto_nacional_iva_deducible);
+
       // Archivo opcional
       if (manualFile) {
         fd.append("file", manualFile);
@@ -1041,7 +1262,13 @@ export default function UploadPage({ token, onLogout }: Props) {
           ref={inputRef}
           type="file"
           multiple
-          accept=".pdf,.xlsx,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          accept={
+            docType === "venta"
+              ? ".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              : docType === "factura"
+                ? ".pdf,.xlsx,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                : ".pdf,.xlsx,.csv,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+          }
           style={{ display: "none" }}
           onChange={handleInputChange}
         />
@@ -1094,7 +1321,7 @@ export default function UploadPage({ token, onLogout }: Props) {
               margin: 0,
             }}
           >
-            o haz clic para seleccionar PDF o XLSX (múltiples)
+            o haz clic para seleccionar {docType === "venta" ? "CSV o XLSX" : "PDF o XLSX"} (múltiples)
           </p>
 
           {/* Lista de archivos seleccionados */}
@@ -1305,6 +1532,281 @@ export default function UploadPage({ token, onLogout }: Props) {
         </div>
       )}
 
+      {/* ========= VENTAS: LOADING OVERLAY ========= */}
+      {ventasUploading && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl p-8 w-full max-w-md shadow-xl border border-gray-100 text-center">
+            <div
+              className="w-16 h-16 mx-auto mb-4 border-4 border-blue-500 border-t-transparent rounded-full"
+              style={{ animation: "spin 1s linear infinite" }}
+            />
+            <h2 className="text-lg font-semibold text-gray-900 mb-2">
+              Procesando fichero de ventas...
+            </h2>
+            <p className="text-gray-600 text-sm">
+              Leyendo filas e insertando en base de datos. Esto puede tardar unos segundos.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ========= VENTAS: RESULTADO ========= */}
+      {ventasResult && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl shadow-xl border border-gray-100 w-full max-w-lg overflow-hidden">
+
+            {/* --- CONFLICTO: fichero duplicado (SHA256) --- */}
+            {ventasResult.conflict === "file" && ventasResult.existing_upload ? (
+              <>
+                <div className="bg-amber-50 p-6 border-b border-amber-100">
+                  <div className="flex items-center gap-4">
+                    <div className="w-14 h-14 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#d97706" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                      </svg>
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-bold text-gray-900">Fichero de ventas duplicado</h2>
+                      <p className="text-sm text-gray-600 mt-1">Este archivo ya fue subido anteriormente (mismo contenido)</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="p-6 space-y-4">
+                  <div className="bg-gray-50 rounded-lg p-4 space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-600">Archivo existente:</span>
+                      <span className="font-medium text-gray-900">{ventasResult.existing_upload.filename}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-600">Subido el:</span>
+                      <span className="text-gray-900">
+                        {ventasResult.existing_upload.uploaded_at
+                          ? new Date(ventasResult.existing_upload.uploaded_at).toLocaleDateString("es-ES", {
+                              year: "numeric", month: "long", day: "numeric",
+                              hour: "2-digit", minute: "2-digit",
+                            })
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-600">Estado:</span>
+                      <span className={`font-medium ${
+                        ventasResult.existing_upload.status === "COMPLETED" ? "text-green-600" : "text-amber-600"
+                      }`}>
+                        {ventasResult.existing_upload.status}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-600">Filas importadas:</span>
+                      <span className="font-medium text-gray-900">
+                        {ventasResult.existing_upload.imported_rows?.toLocaleString("es-ES") ?? "—"}
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-gray-600 text-center text-sm">
+                    El fichero es identico al ya subido. ¿Deseas subirlo de todos modos?
+                  </p>
+                </div>
+                <div className="flex justify-end gap-3 p-6 bg-gray-50 border-t border-gray-100">
+                  <button
+                    onClick={handleVentasDuplicateCancel}
+                    className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 font-medium"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={() => handleVentasDuplicateAction("skip")}
+                    disabled={ventasUploading}
+                    className="px-4 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 font-medium disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {ventasUploading ? (
+                      <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Subiendo...</>
+                    ) : "Ignorar y subir"}
+                  </button>
+                </div>
+              </>
+
+            /* --- CONFLICTO: filas duplicadas --- */
+            ) : ventasResult.conflict === "rows" ? (
+              <>
+                <div className="bg-amber-50 p-6 border-b border-amber-100">
+                  <div className="flex items-center gap-4">
+                    <div className="w-14 h-14 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#d97706" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                      </svg>
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-bold text-gray-900">Filas duplicadas detectadas</h2>
+                      <p className="text-sm text-gray-600 mt-1">
+                        Algunas filas del fichero ya existen en la base de datos
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div className="p-6 space-y-4">
+                  <div className="bg-gray-50 rounded-lg p-4 space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-600">Archivo:</span>
+                      <span className="font-medium text-gray-900 truncate max-w-[200px]">{ventasResult.filename}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-600">Total filas en fichero:</span>
+                      <span className="font-semibold text-gray-900">{ventasResult.total_rows.toLocaleString("es-ES")}</span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-green-50 rounded-lg p-4 text-center">
+                      <p className="text-2xl font-bold text-green-700">
+                        {(ventasResult.new_rows_count ?? 0).toLocaleString("es-ES")}
+                      </p>
+                      <p className="text-xs text-green-600 mt-1">Filas nuevas</p>
+                    </div>
+                    <div className="bg-amber-50 rounded-lg p-4 text-center">
+                      <p className="text-2xl font-bold text-amber-700">
+                        {(ventasResult.duplicate_rows_count ?? 0).toLocaleString("es-ES")}
+                      </p>
+                      <p className="text-xs text-amber-600 mt-1">Filas ya existentes</p>
+                    </div>
+                  </div>
+                  <p className="text-gray-600 text-center text-sm">
+                    ¿Que deseas hacer con las {(ventasResult.duplicate_rows_count ?? 0).toLocaleString("es-ES")} filas duplicadas?
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 p-6 bg-gray-50 border-t border-gray-100">
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => handleVentasDuplicateAction("skip")}
+                      disabled={ventasUploading}
+                      className="flex-1 px-4 py-2 rounded-lg bg-green-600 text-white hover:bg-green-700 font-medium disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
+                    >
+                      {ventasUploading ? (
+                        <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Procesando...</>
+                      ) : (
+                        <>Descartar duplicadas, insertar solo nuevas ({(ventasResult.new_rows_count ?? 0).toLocaleString("es-ES")})</>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => handleVentasDuplicateAction("upsert")}
+                      disabled={ventasUploading}
+                      className="flex-1 px-4 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 font-medium disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
+                    >
+                      {ventasUploading ? (
+                        <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Procesando...</>
+                      ) : (
+                        <>Actualizar existentes e insertar nuevas ({ventasResult.total_rows.toLocaleString("es-ES")})</>
+                      )}
+                    </button>
+                  </div>
+                  <button
+                    onClick={handleVentasDuplicateCancel}
+                    disabled={ventasUploading}
+                    className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 font-medium disabled:opacity-50"
+                  >
+                    Cancelar - no subir nada
+                  </button>
+                </div>
+              </>
+
+            /* --- RESULTADO NORMAL (sin conflicto) --- */
+            ) : (
+              <div className="p-6">
+                <h2
+                  className="text-xl font-bold mb-4 text-center"
+                  style={{
+                    background: ventasResult.error
+                      ? "linear-gradient(135deg, #7f1d1d 0%, #b91c1c 100%)"
+                      : "linear-gradient(135deg, #092342 0%, #1a335a 100%)",
+                    WebkitBackgroundClip: "text",
+                    WebkitTextFillColor: "transparent",
+                    backgroundClip: "text",
+                  }}
+                >
+                  {ventasResult.error ? "Error en importacion de ventas" : "Resultado de importacion de ventas"}
+                </h2>
+
+                <div className="space-y-3 mb-6">
+                  <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                    <span className="text-gray-600 font-medium">Archivo</span>
+                    <span className="font-semibold text-gray-900 text-sm truncate max-w-[200px]">
+                      {ventasResult.filename}
+                    </span>
+                  </div>
+
+                  {ventasResult.error ? (
+                    <div className="p-3 bg-red-50 rounded-lg">
+                      <span className="text-red-700 font-medium text-sm">Motivo del error</span>
+                      <p className="mt-1 text-sm text-red-600">{ventasResult.error}</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                        <span className="text-gray-600 font-medium">Filas en fichero</span>
+                        <span className="font-semibold text-gray-900">
+                          {ventasResult.total_rows.toLocaleString("es-ES")}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center p-3 bg-green-50 rounded-lg">
+                        <span className="text-green-700 font-medium">Filas insertadas</span>
+                        <span className="font-bold text-green-700 text-lg">
+                          {ventasResult.inserted.toLocaleString("es-ES")}
+                        </span>
+                      </div>
+
+                      {(ventasResult.skipped ?? 0) > 0 && (
+                        <div className="flex justify-between items-center p-3 bg-amber-50 rounded-lg">
+                          <span className="text-amber-700 font-medium">Filas duplicadas descartadas</span>
+                          <span className="font-bold text-amber-700">
+                            {(ventasResult.skipped ?? 0).toLocaleString("es-ES")}
+                          </span>
+                        </div>
+                      )}
+
+                      {ventasResult.parse_errors.length > 0 && (
+                        <div className="p-3 bg-yellow-50 rounded-lg">
+                          <span className="text-yellow-700 font-medium text-sm">
+                            {ventasResult.parse_errors.length} fila(s) con errores de parseo
+                          </span>
+                          <ul className="mt-1 text-xs text-yellow-600 max-h-24 overflow-auto">
+                            {ventasResult.parse_errors.slice(0, 5).map((e, i) => (
+                              <li key={i}>Fila {e.row}: {e.error}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {ventasResult.insert_errors.length > 0 && (
+                        <div className="p-3 bg-red-50 rounded-lg">
+                          <span className="text-red-700 font-medium text-sm">
+                            {ventasResult.insert_errors.length} error(es) de insercion
+                          </span>
+                          <ul className="mt-1 text-xs text-red-600 max-h-24 overflow-auto">
+                            {ventasResult.insert_errors.slice(0, 5).map((e, i) => (
+                              <li key={i}>Batch {e.batch_start}: {e.error}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                <div className="flex justify-center">
+                  <button
+                    onClick={() => setVentasResult(null)}
+                    className="px-6 py-2 bg-blue-700 text-white rounded-lg hover:bg-blue-800 font-medium"
+                  >
+                    Cerrar
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ========= MODAL FLUJO PASO A PASO ========= */}
       {processingStep !== "idle" && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -1467,6 +1969,61 @@ export default function UploadPage({ token, onLogout }: Props) {
                             <span className="ml-2 text-gray-900">{aiResult.descripcion}</span>
                           </div>
                         )}
+                      </div>
+
+                      {/* Clasificación fiscal */}
+                      <div className="mt-4 pt-3 border-t border-gray-200">
+                        <h4 className="text-sm font-semibold text-gray-700 mb-2">Clasificación fiscal:</h4>
+                        <div className="grid grid-cols-2 gap-2 text-sm">
+                          {aiResult.pais_factura && (
+                            <div>
+                              <span className="text-gray-500">País factura:</span>
+                              <span className="ml-2 text-gray-900">{aiResult.pais_factura}</span>
+                            </div>
+                          )}
+                          <div>
+                            <span className="text-gray-500">País UE:</span>
+                            <span className={`ml-2 font-medium ${aiResult.pais_ue === "SI" ? "text-green-700" : "text-orange-600"}`}>
+                              {aiResult.pais_ue || "—"}
+                            </span>
+                          </div>
+                          {aiResult.tipo_adquisicion && (
+                            <div>
+                              <span className="text-gray-500">Tipo adquisición:</span>
+                              <span className="ml-2 text-gray-900">{aiResult.tipo_adquisicion}</span>
+                            </div>
+                          )}
+                          <div>
+                            <span className="text-gray-500">Serv. intracom. sin IVA:</span>
+                            <span className={`ml-2 font-medium ${aiResult.servicio_intracomunitario_sin_iva === "SI" ? "text-blue-700" : "text-gray-500"}`}>
+                              {aiResult.servicio_intracomunitario_sin_iva || "NO"}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">Serv. extracom. sin IVA:</span>
+                            <span className={`ml-2 font-medium ${aiResult.servicio_extracomunitario_sin_iva === "SI" ? "text-blue-700" : "text-gray-500"}`}>
+                              {aiResult.servicio_extracomunitario_sin_iva || "NO"}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">Inversión suj. pasivo:</span>
+                            <span className={`ml-2 font-medium ${aiResult.inversion_sujeto_pasivo === "SI" ? "text-red-600" : "text-gray-500"}`}>
+                              {aiResult.inversion_sujeto_pasivo || "NO"}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">DUA:</span>
+                            <span className={`ml-2 font-medium ${aiResult.dua === "SI" ? "text-purple-700" : "text-gray-500"}`}>
+                              {aiResult.dua || "NO"}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500">Gasto nac. IVA deducible:</span>
+                            <span className={`ml-2 font-medium ${aiResult.gasto_nacional_iva_deducible === "SI" ? "text-green-700" : "text-gray-500"}`}>
+                              {aiResult.gasto_nacional_iva_deducible || "NO"}
+                            </span>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -1966,10 +2523,153 @@ export default function UploadPage({ token, onLogout }: Props) {
                 </div>
               </div>
 
-              {/* Sección 3: Datos adicionales */}
+              {/* Sección 3: Clasificación fiscal */}
               <div className="mb-6">
                 <h3 className="text-lg font-semibold text-gray-800 mb-4 pb-2 border-b border-gray-200">
-                  3. Datos adicionales
+                  3. Clasificación fiscal
+                </h3>
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                  gap: "1.25rem 1.5rem",
+                }}>
+                  {/* País factura */}
+                  <div>
+                    <label style={manualLabelStyle}>País factura</label>
+                    <select
+                      value={manualForm.pais_factura}
+                      onChange={(e) => setManualField("pais_factura", e.target.value)}
+                      style={manualInputStyle}
+                    >
+                      <option value="">— Seleccionar —</option>
+                      {COUNTRY_CODES.map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* País UE */}
+                  <div>
+                    <label style={manualLabelStyle}>País UE</label>
+                    <select
+                      value={manualForm.pais_ue}
+                      onChange={(e) => setManualField("pais_ue", e.target.value)}
+                      style={manualInputStyle}
+                    >
+                      <option value="SI">SI</option>
+                      <option value="NO">NO</option>
+                    </select>
+                  </div>
+
+                  {/* Tipo de adquisición */}
+                  <div>
+                    <label style={manualLabelStyle}>Tipo de adquisición</label>
+                    <select
+                      value={manualForm.tipo_adquisicion}
+                      onChange={(e) => setManualField("tipo_adquisicion", e.target.value)}
+                      style={manualInputStyle}
+                    >
+                      <option value="">— Seleccionar —</option>
+                      <option value="Gasto">Gasto</option>
+                      <option value="Bienes">Bienes</option>
+                      <option value="Servicios">Servicios</option>
+                    </select>
+                  </div>
+
+                  {/* Categoría */}
+                  <div>
+                    <label style={manualLabelStyle}>Categoría</label>
+                    <select
+                      value={manualForm.categoria}
+                      onChange={(e) => setManualField("categoria", e.target.value)}
+                      style={manualInputStyle}
+                    >
+                      <option value="">— Seleccionar —</option>
+                      <option value="Nota de Crédito">Nota de Crédito</option>
+                      <option value="Tarifas de Logística de Amazon">Tarifas de Logística de Amazon</option>
+                      <option value="Tarifas de Vender en Amazon">Tarifas de Vender en Amazon</option>
+                      <option value="Tarifas de Anuncios de Amazon">Tarifas de Anuncios de Amazon</option>
+                      <option value="Software">Software</option>
+                      <option value="Hardware">Hardware</option>
+                      <option value="Servicios profesionales">Servicios profesionales</option>
+                      <option value="Marketing">Marketing</option>
+                      <option value="Viajes">Viajes</option>
+                      <option value="Material de oficina">Material de oficina</option>
+                      <option value="Otros">Otros</option>
+                    </select>
+                  </div>
+
+                  {/* Servicios intracomunitarios sin IVA */}
+                  <div>
+                    <label style={manualLabelStyle}>Serv. intracomunitario sin IVA</label>
+                    <select
+                      value={manualForm.servicio_intracomunitario_sin_iva}
+                      onChange={(e) => setManualField("servicio_intracomunitario_sin_iva", e.target.value)}
+                      style={manualInputStyle}
+                    >
+                      <option value="SI">SI</option>
+                      <option value="NO">NO</option>
+                    </select>
+                  </div>
+
+                  {/* Servicios extracomunitarios sin IVA */}
+                  <div>
+                    <label style={manualLabelStyle}>Serv. extracomunitario sin IVA</label>
+                    <select
+                      value={manualForm.servicio_extracomunitario_sin_iva}
+                      onChange={(e) => setManualField("servicio_extracomunitario_sin_iva", e.target.value)}
+                      style={manualInputStyle}
+                    >
+                      <option value="SI">SI</option>
+                      <option value="NO">NO</option>
+                    </select>
+                  </div>
+
+                  {/* Inversión sujeto pasivo */}
+                  <div>
+                    <label style={manualLabelStyle}>Inversión sujeto pasivo</label>
+                    <select
+                      value={manualForm.inversion_sujeto_pasivo}
+                      onChange={(e) => setManualField("inversion_sujeto_pasivo", e.target.value)}
+                      style={manualInputStyle}
+                    >
+                      <option value="SI">SI</option>
+                      <option value="NO">NO</option>
+                    </select>
+                  </div>
+
+                  {/* DUA */}
+                  <div>
+                    <label style={manualLabelStyle}>DUA</label>
+                    <select
+                      value={manualForm.dua}
+                      onChange={(e) => setManualField("dua", e.target.value)}
+                      style={manualInputStyle}
+                    >
+                      <option value="SI">SI</option>
+                      <option value="NO">NO</option>
+                    </select>
+                  </div>
+
+                  {/* Gasto nacional IVA deducible */}
+                  <div style={{ gridColumn: "1 / -1" }}>
+                    <label style={manualLabelStyle}>Gasto nacional con IVA deducible</label>
+                    <select
+                      value={manualForm.gasto_nacional_iva_deducible}
+                      onChange={(e) => setManualField("gasto_nacional_iva_deducible", e.target.value)}
+                      style={{ ...manualInputStyle, maxWidth: "200px" }}
+                    >
+                      <option value="SI">SI</option>
+                      <option value="NO">NO</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sección 4: Datos adicionales */}
+              <div className="mb-6">
+                <h3 className="text-lg font-semibold text-gray-800 mb-4 pb-2 border-b border-gray-200">
+                  4. Datos adicionales
                 </h3>
                 <div style={{
                   display: "grid",
@@ -2053,10 +2753,10 @@ export default function UploadPage({ token, onLogout }: Props) {
                 </div>
               </div>
 
-              {/* Sección 4: Archivo de factura */}
+              {/* Sección 5: Archivo de factura */}
               <div className="mb-6">
                 <h3 className="text-lg font-semibold text-gray-800 mb-4 pb-2 border-b border-gray-200">
-                  4. Archivo de factura (opcional)
+                  5. Archivo de factura (opcional)
                 </h3>
                 <div className="flex items-center gap-3">
                   <input

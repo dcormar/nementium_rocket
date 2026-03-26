@@ -30,7 +30,8 @@ async def uploads_historico(
     offset: int = 0,
     order_by: str = "fecha",
     order_dir: str = "desc",
-    tz: str = "Europe/Madrid"
+    tz: str = "Europe/Madrid",
+    current_user: UserInDB = Depends(get_current_user),
 ):
     supabase_url = (os.getenv("SUPABASE_URL") or "").strip()
     supabase_key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()

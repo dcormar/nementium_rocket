@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 import httpx
 from datetime import datetime
 import logging, os
+from auth import get_current_user, UserInDB
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -26,7 +27,7 @@ class EstadoModelos(BaseModel):
     gastos_nacionales_iva: float
 
 @router.get("/estado", response_model=EstadoModelos)
-async def get_estado_modelos():
+async def get_estado_modelos(current_user: UserInDB = Depends(get_current_user)):
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     async with httpx.AsyncClient() as client:
         # Aquí deberías consultar y calcular cada campo según tus tablas y lógica

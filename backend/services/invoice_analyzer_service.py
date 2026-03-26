@@ -58,12 +58,28 @@ Campos a extraer:
 - pais_origen: país desde el que se emite la factura, en formato ISO 3166-2 (ES, FR, DE, etc.)
 - notas: cualquier anotación relevante para contabilidad o aclaraciones, siempre en idioma español. Si no aplica, usa "N/A"
 
+--- CLASIFICACIÓN FISCAL (para modelos de Hacienda) ---
+Analiza la factura y determina los siguientes campos fiscales. Usa la información del NIF/VAT del proveedor, la dirección, el tipo de servicio/bien, y el IVA aplicado para clasificar:
+
+- pais_factura: código ISO del país del proveedor, deducido del NIF/VAT (ej: "ES" si empieza por ES, "FR" si empieza por FR, "DE" si empieza por DE, etc.). Si no hay NIF, deducir de la dirección. Formato: código ISO 3166-2 de 2 letras.
+- pais_ue: "SI" si el país del proveedor pertenece a la UE (los 27 estados miembros actuales), "NO" si no.
+- tipo_adquisicion: clasificar como:
+    • "Gasto" si es un pago a instituciones públicas sin IVA asociado, un DUA (documento único administrativo de aduanas), o similar
+    • "Bienes" si se adquieren productos físicos/tangibles
+    • "Servicios" si se contratan servicios (software, consultoría, logística, publicidad, etc.)
+- servicio_intracomunitario_sin_iva: "SI" si es un servicio recibido de un proveedor de la UE (no España) SIN IVA repercutido (IVA = 0 y proveedor UE no español). "NO" en cualquier otro caso.
+- servicio_extracomunitario_sin_iva: "SI" si es un servicio recibido de un proveedor fuera de la UE SIN IVA. "NO" en cualquier otro caso.
+- inversion_sujeto_pasivo: "SI" si aplica inversión del sujeto pasivo (servicios intracomunitarios o extracomunitarios sin IVA donde el receptor debe autorepercutirse el IVA). "NO" en cualquier otro caso.
+- dua: "SI" si el documento es un DUA (Documento Único Administrativo) de importación. "NO" en cualquier otro caso.
+- gasto_nacional_iva_deducible: "SI" si es un gasto de un proveedor español con IVA repercutido deducible (IVA > 0 y proveedor español). "NO" en cualquier otro caso.
+
 Ejemplo de respuesta esperada:
-{"tipo": "factura", "id_factura": "FAC-2024-001", "proveedor_vat": "B12345678", "fecha": "15/01/2024", "categoria": "Software", "proveedor": "Empresa S.L.", "descripcion": "Licencia anual de software", "importe_sin_iva": 100.00, "iva_porcentaje": 21, "importe_total": 121.00, "moneda": "EUR", "tipo_cambio": null, "pais_origen": "ES", "notas": "N/A"}
+{"tipo": "factura", "id_factura": "FAC-2024-001", "proveedor_vat": "B12345678", "fecha": "15/01/2024", "categoria": "Software", "proveedor": "Empresa S.L.", "descripcion": "Licencia anual de software", "importe_sin_iva": 100.00, "iva_porcentaje": 21, "importe_total": 121.00, "moneda": "EUR", "tipo_cambio": null, "pais_origen": "ES", "notas": "N/A", "pais_factura": "ES", "pais_ue": "SI", "tipo_adquisicion": "Servicios", "servicio_intracomunitario_sin_iva": "NO", "servicio_extracomunitario_sin_iva": "NO", "inversion_sujeto_pasivo": "NO", "dua": "NO", "gasto_nacional_iva_deducible": "SI"}
 
 IMPORTANTE:
 - Responde ÚNICAMENTE con el JSON, sin texto adicional ni markdown.
 - Ningún campo debe quedar vacío: usa "N/A" donde no haya datos.
+- Para los campos SI/NO, usa exactamente "SI" o "NO" (sin tilde).
 - Mantén el orden exacto de los campos.
 - Los campos "descripcion" y "notas" DEBEN estar SIEMPRE en español, traducidos si es necesario."""
 
@@ -347,12 +363,34 @@ def _normalize_invoice_data(data: dict) -> dict:
     # Normalizar país
     if data.get("pais_origen"):
         data["pais_origen"] = data["pais_origen"].upper().strip()[:2]
-    
+
+    # Normalizar pais_factura
+    if data.get("pais_factura"):
+        data["pais_factura"] = data["pais_factura"].upper().strip()[:2]
+
+    # Normalizar campos SI/NO fiscales
+    si_no_fields = [
+        "pais_ue", "servicio_intracomunitario_sin_iva",
+        "servicio_extracomunitario_sin_iva", "inversion_sujeto_pasivo",
+        "dua", "gasto_nacional_iva_deducible",
+    ]
+    for field in si_no_fields:
+        val = data.get(field, "").strip().upper() if data.get(field) else "NO"
+        data[field] = "SI" if val in ("SI", "SÍ", "YES", "TRUE", "1") else "NO"
+
+    # Normalizar tipo_adquisicion
+    if data.get("tipo_adquisicion"):
+        val = data["tipo_adquisicion"].strip().capitalize()
+        if val not in ("Gasto", "Bienes", "Servicios"):
+            data["tipo_adquisicion"] = "Servicios"  # Default
+        else:
+            data["tipo_adquisicion"] = val
+
     # Asegurar N/A en campos de texto vacíos
     for field in ["proveedor_vat", "notas"]:
         if not data.get(field) or data[field] == "":
             data[field] = "N/A"
-    
+
     return data
 
 

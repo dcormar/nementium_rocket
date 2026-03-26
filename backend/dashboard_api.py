@@ -1,11 +1,12 @@
 # app/routes/dashboard.py
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel
 from typing import List
 from decimal import Decimal
 import os
 import httpx
 import logging
+from auth import get_current_user, UserInDB
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 logger = logging.getLogger(__name__)
@@ -33,7 +34,8 @@ def _to_float(x):
 @router.get("/", response_model=DashboardResponse)
 async def get_dashboard(
     months: int = Query(6, ge=1, le=24),
-    tz: str = Query("Europe/Madrid")
+    tz: str = Query("Europe/Madrid"),
+    current_user: UserInDB = Depends(get_current_user),
 ):
     """
     Devuelve agregados de los últimos `months` meses listos para el dashboard.
@@ -90,7 +92,7 @@ class HistoricoResponse(BaseModel):
     items: list[dict]  # o crea un modelo Operacion
 
 @router.get("/historico", response_model=HistoricoResponse)
-async def historico(limit: int = 10):
+async def historico(limit: int = 10, current_user: UserInDB = Depends(get_current_user)):
     supabase_url = (os.getenv("SUPABASE_URL") or "").strip()
     supabase_key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     if not supabase_url or not supabase_key:

@@ -43,3 +43,12 @@ credentials/
 
 # Cursor IDE (contiene tokens MCP)
 .cursor/
+
+# Claude Code MCP config (contiene tokens)
+.mcp.json
+
+# Documentación interna del proyecto
+docs_internos/
+
+# Ficheros auxiliares (datos de ventas/ads reales)
+ficheros_aux/

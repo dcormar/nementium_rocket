@@ -135,6 +135,15 @@ async def create_or_update_factura(ai_data: dict) -> int | None:
         "importe_sin_iva_local": ai_data.get("importe_sin_iva"),
         "iva_local": ai_data.get("iva_porcentaje"),
         "total_moneda_local": ai_data.get("importe_total"),
+        # Campos de clasificación fiscal
+        "pais_factura": ai_data.get("pais_factura"),
+        "pais_ue": ai_data.get("pais_ue"),
+        "tipo_adquisicion": ai_data.get("tipo_adquisicion"),
+        "servicio_intracomunitario_sin_iva": ai_data.get("servicio_intracomunitario_sin_iva"),
+        "servicio_extracomunitario_sin_iva": ai_data.get("servicio_extracomunitario_sin_iva"),
+        "inversion_sujeto_pasivo": ai_data.get("inversion_sujeto_pasivo"),
+        "dua": ai_data.get("dua"),
+        "gasto_nacional_iva_deducible": ai_data.get("gasto_nacional_iva_deducible"),
     }
     
     # Añadir fecha_dt si se parseó correctamente

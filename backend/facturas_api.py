@@ -112,6 +112,15 @@ class FacturaManual(BaseModel):
     notas: Optional[str] = None
     descripcion: Optional[str] = None
     categoria: Optional[str] = None
+    # Clasificación fiscal
+    pais_factura: Optional[str] = None
+    pais_ue: Optional[str] = None
+    tipo_adquisicion: Optional[str] = None
+    servicio_intracomunitario_sin_iva: Optional[str] = None
+    servicio_extracomunitario_sin_iva: Optional[str] = None
+    inversion_sujeto_pasivo: Optional[str] = None
+    dua: Optional[str] = None
+    gasto_nacional_iva_deducible: Optional[str] = None
 
 @router.get("/", response_model=List[Factura])
 async def get_facturas(
@@ -124,7 +133,8 @@ async def get_facturas(
     categoria: Optional[str] = Query(None, description="Filtrar por categoría"),
     moneda: Optional[str] = Query(None, description="Filtrar por moneda"),
     limit: Optional[int] = Query(None, description="Límite de resultados (máx 1000)", ge=1, le=1000),
-    offset: Optional[int] = Query(None, description="Offset para paginación", ge=0)
+    offset: Optional[int] = Query(None, description="Offset para paginación", ge=0),
+    current_user: UserInDB = Depends(get_current_user),
 ):
     """
     Obtiene facturas con múltiples filtros opcionales.
@@ -210,7 +220,7 @@ async def get_facturas(
         return data
 
 @router.post("/", response_model=Factura)
-async def add_factura(factura: Factura):
+async def add_factura(factura: Factura, current_user: UserInDB = Depends(get_current_user)):
     url = f"{SUPABASE_URL}/rest/v1/facturas"
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
     async with httpx.AsyncClient() as client:
@@ -237,6 +247,14 @@ async def add_factura_manual(
     notas: Optional[str] = Form(None),
     descripcion: Optional[str] = Form(None),
     categoria: Optional[str] = Form(None),
+    pais_factura: Optional[str] = Form(None),
+    pais_ue: Optional[str] = Form(None),
+    tipo_adquisicion: Optional[str] = Form(None),
+    servicio_intracomunitario_sin_iva: Optional[str] = Form(None),
+    servicio_extracomunitario_sin_iva: Optional[str] = Form(None),
+    inversion_sujeto_pasivo: Optional[str] = Form(None),
+    dua: Optional[str] = Form(None),
+    gasto_nacional_iva_deducible: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     current_user: UserInDB = Depends(get_current_user),
 ):
@@ -304,6 +322,14 @@ async def add_factura_manual(
         "notas": notas if notas and notas.strip() else None,
         "descripcion": descripcion if descripcion and descripcion.strip() else "Añadida manualmente",
         "categoria": categoria if categoria and categoria.strip() else None,
+        "pais_factura": pais_factura if pais_factura and pais_factura.strip() else None,
+        "pais_ue": pais_ue if pais_ue and pais_ue.strip() else None,
+        "tipo_adquisicion": tipo_adquisicion if tipo_adquisicion and tipo_adquisicion.strip() else None,
+        "servicio_intracomunitario_sin_iva": servicio_intracomunitario_sin_iva if servicio_intracomunitario_sin_iva and servicio_intracomunitario_sin_iva.strip() else None,
+        "servicio_extracomunitario_sin_iva": servicio_extracomunitario_sin_iva if servicio_extracomunitario_sin_iva and servicio_extracomunitario_sin_iva.strip() else None,
+        "inversion_sujeto_pasivo": inversion_sujeto_pasivo if inversion_sujeto_pasivo and inversion_sujeto_pasivo.strip() else None,
+        "dua": dua if dua and dua.strip() else None,
+        "gasto_nacional_iva_deducible": gasto_nacional_iva_deducible if gasto_nacional_iva_deducible and gasto_nacional_iva_deducible.strip() else None,
     }
     
     # Eliminar None values

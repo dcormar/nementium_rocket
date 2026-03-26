@@ -3,7 +3,9 @@ from dotenv import load_dotenv
 
 # Carga .env en variables de entorno
 load_dotenv()
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from auth import router as auth_router
 from facturas_api import router as facturas_router
@@ -18,6 +20,7 @@ from consulta_api import router as consulta_router
 from assistant_api import router as assistant_router
 from telegram_webhook_api import router as telegram_webhook_router
 from email_contact_helper_api import router as email_contact_helper_router
+from rentabilidad_api import router as rentabilidad_router
 from contextlib import asynccontextmanager
 
 
@@ -25,7 +28,8 @@ from contextlib import asynccontextmanager
 
 # Configuración global de logging desde .env
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-log_path = os.path.join(os.path.dirname(__file__), "log/modeloshaciendaweb.log")
+LOG_FILENAME = os.getenv("LOG_FILENAME", "modeloshaciendaweb.log")
+log_path = os.path.join(os.path.dirname(__file__), "log", LOG_FILENAME)
 log_format = '%(asctime)s %(levelname)s %(name)s %(message)s'
 
 # Mapear string a nivel de logging
@@ -122,13 +126,28 @@ class ProxyHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(ProxyHeadersMiddleware)
 
 
+# CORS: orígenes permitidos desde variable de entorno (separados por coma)
+# En desarrollo: http://localhost:5173 (Vite dev server)
+# En producción: configurar ALLOWED_ORIGINS=https://tudominio.com
+_allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:4173").split(",")
+_allowed_origins = [o.strip() for o in _allowed_origins if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(HTTPException)
+async def http_exception_logger(request: Request, exc: HTTPException):
+    if exc.status_code >= 400:
+        logger.warning(
+            "%s %s → %d: %s",
+            request.method, request.url.path, exc.status_code, exc.detail,
+        )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 app.include_router(auth_router)
 app.include_router(facturas_router)
@@ -143,6 +162,7 @@ app.include_router(consulta_router)
 app.include_router(assistant_router)
 app.include_router(telegram_webhook_router)
 app.include_router(email_contact_helper_router)
+app.include_router(rentabilidad_router)
 
 logger.info("Routers montados y aplicación FastAPI iniciada")
 
